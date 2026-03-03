@@ -1,0 +1,23 @@
+# Production Backtesting System - Pinned Dependencies
+# Last updated: 2026-03-03
+
+# Data & API
+python-binance==1.0.19
+requests==2.31.0
+
+# Database
+sqlalchemy==2.0.25
+psycopg2-binary==2.9.9
+
+# Data processing
+pandas==2.2.0
+numpy==1.26.3
+
+# Technical analysis
+pandas-ta==0.3.14b1
+
+# Backtesting engine
+backtesting==0.3.3
+
+# Utilities
+python-dotenv==1.0.0

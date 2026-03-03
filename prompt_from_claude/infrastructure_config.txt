@@ -1,0 +1,375 @@
+production_backtester_requirements.txt:
+======================================
+
+# Database
+SQLAlchemy==2.0.23
+psycopg2-binary==2.9.9
+python-dotenv==1.0.0
+
+# Data & Analysis
+pandas==2.1.3
+numpy==1.26.2
+pandas-ta==0.3.14b0
+
+# Backtesting
+backtesting-py==0.3.3
+
+# Exchange API
+python-binance==1.0.17
+
+# Utilities
+requests==2.31.0
+pytz==2023.3
+python-dateutil==2.8.2
+
+# Logging & Monitoring
+python-json-logger==2.0.7
+
+# Testing (optional for development)
+pytest==7.4.3
+pytest-cov==4.1.0
+
+# Linting (optional)
+black==23.12.0
+flake8==6.1.0
+pylint==3.0.3
+
+---
+
+docker-compose.yml:
+===================
+
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: trading_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${DB_USER:-trading_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+      POSTGRES_DB: ${DB_NAME:-trading_db}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-trading_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - trading_network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  backtester:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: trading_backtester
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-trading_user}
+      DB_PASSWORD: ${DB_PASSWORD:-changeme}
+      DB_NAME: ${DB_NAME:-trading_db}
+      BINANCE_API_KEY: ${BINANCE_API_KEY}
+      BINANCE_API_SECRET: ${BINANCE_API_SECRET}
+      LOG_LEVEL: INFO
+    volumes:
+      - ./src:/app/src
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./config:/app/config
+    working_dir: /app
+    command: >
+      sh -c "python src/fetch_to_db.py &&
+             python src/backtester.py"
+    networks:
+      - trading_network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "10"
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  trading_network:
+    driver: bridge
+
+---
+
+Dockerfile:
+===========
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# System dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Application code
+COPY src/ ./src/
+COPY config/ ./config/
+
+# Create logging directory
+RUN mkdir -p /app/logs /app/data
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import psycopg2; psycopg2.connect('dbname=trading_db user=${DB_USER} password=${DB_PASSWORD} host=postgres')" || exit 1
+
+CMD ["python", "src/backtester.py"]
+
+---
+
+.env.example:
+=============
+
+# Database Configuration
+DB_HOST=postgres
+DB_PORT=5432
+DB_USER=trading_user
+DB_PASSWORD=your_secure_password_here
+DB_NAME=trading_db
+
+# Binance API (use testnet keys first!)
+BINANCE_API_KEY=your_api_key_here
+BINANCE_API_SECRET=your_api_secret_here
+
+# Testnet (STRONGLY RECOMMENDED before live)
+# BINANCE_BASE_URL=https://testnet.binance.vision
+
+# Logging
+LOG_LEVEL=INFO
+
+# Backtest Parameters
+BACKTEST_START_DATE=2023-01-01
+BACKTEST_END_DATE=2025-01-01
+INITIAL_CAPITAL=10000.0
+
+# Risk Management
+MAX_POSITION_SIZE_PCT=0.95
+MAX_DRAWDOWN_STOP=-0.15
+SLIPPAGE_BPS=5
+COMMISSION_BPS=10
+
+---
+
+config.py:
+==========
+
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+class DatabaseConfig:
+    """Database connection configuration"""
+    HOST = os.getenv('DB_HOST', 'localhost')
+    PORT = int(os.getenv('DB_PORT', 5432))
+    USER = os.getenv('DB_USER', 'trading_user')
+    PASSWORD = os.getenv('DB_PASSWORD')
+    DATABASE = os.getenv('DB_NAME', 'trading_db')
+    
+    @property
+    def connection_string(self):
+        """Generate SQLAlchemy connection string"""
+        return f"postgresql://{self.USER}:{self.PASSWORD}@{self.HOST}:{self.PORT}/{self.DATABASE}"
+
+class BinanceConfig:
+    """Binance API configuration"""
+    API_KEY = os.getenv('BINANCE_API_KEY')
+    API_SECRET = os.getenv('BINANCE_API_SECRET')
+    BASE_URL = os.getenv('BINANCE_BASE_URL', 'https://api.binance.com')
+    REQUEST_TIMEOUT = 10  # seconds
+    MAX_RETRIES = 5
+    BACKOFF_FACTOR = 0.5  # exponential backoff
+
+class BacktestConfig:
+    """Backtest parameters"""
+    START_DATE = os.getenv('BACKTEST_START_DATE', '2023-01-01')
+    END_DATE = os.getenv('BACKTEST_END_DATE', '2025-01-01')
+    INITIAL_CAPITAL = float(os.getenv('INITIAL_CAPITAL', 10000.0))
+    
+class RiskConfig:
+    """Risk management settings"""
+    MAX_POSITION_SIZE_PCT = float(os.getenv('MAX_POSITION_SIZE_PCT', 0.95))
+    MAX_DRAWDOWN_STOP = float(os.getenv('MAX_DRAWDOWN_STOP', -0.15))
+    SLIPPAGE_BPS = float(os.getenv('SLIPPAGE_BPS', 5)) / 10000  # Convert bps to decimal
+    COMMISSION_BPS = float(os.getenv('COMMISSION_BPS', 10)) / 10000
+
+class LogConfig:
+    """Logging configuration"""
+    LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
+    LOG_DIR = Path('/app/logs')
+    LOG_DIR.mkdir(exist_ok=True)
+    LOG_FILE = LOG_DIR / 'backtester.log'
+
+# Validation
+if not BinanceConfig.API_KEY or not BinanceConfig.API_SECRET:
+    raise ValueError("BINANCE_API_KEY and BINANCE_API_SECRET must be set in .env")
+
+if not DatabaseConfig.PASSWORD:
+    raise ValueError("DB_PASSWORD must be set in .env")
+
+---
+
+Makefile (for convenience):
+===========================
+
+.PHONY: help setup up down logs test clean lint format
+
+help:
+	@echo "Production Backtester Commands"
+	@echo "================================"
+	@echo "make setup          - Install dependencies and build containers"
+	@echo "make up             - Start all services"
+	@echo "make down           - Stop all services"
+	@echo "make logs           - Follow container logs"
+	@echo "make test           - Run pytest suite"
+	@echo "make lint           - Run flake8 and pylint"
+	@echo "make format         - Format code with black"
+	@echo "make clean          - Remove containers and volumes (DESTRUCTIVE)"
+	@echo "make db-shell       - Connect to PostgreSQL shell"
+	@echo "make run-fetch      - Run data fetch only"
+	@echo "make run-backtest   - Run backtest only"
+
+setup:
+	docker-compose build
+	cp .env.example .env
+	@echo "Setup complete. Edit .env with your configuration."
+
+up:
+	docker-compose up -d
+	@echo "Services started. Check logs with: make logs"
+
+down:
+	docker-compose down
+
+logs:
+	docker-compose logs -f
+
+test:
+	docker-compose exec backtester pytest tests/ -v --cov=src
+
+lint:
+	docker-compose exec backtester flake8 src tests
+	docker-compose exec backtester pylint src
+
+format:
+	docker-compose exec backtester black src tests
+
+clean:
+	docker-compose down -v
+	find . -type d -name __pycache__ -exec rm -rf {} +
+	find . -type f -name "*.pyc" -delete
+
+db-shell:
+	docker-compose exec postgres psql -U ${DB_USER} -d ${DB_NAME}
+
+run-fetch:
+	docker-compose exec backtester python src/fetch_to_db.py
+
+run-backtest:
+	docker-compose exec backtester python src/backtester.py
+
+---
+
+DEPLOYMENT_CHECKLIST.md:
+=======================
+
+# Pre-Deployment Verification Checklist
+
+## Data Integrity
+- [ ] All 5 timeframes (1m, 1h, 4h, 1d, 1w) populated for BTC/USDT
+- [ ] Data validation checks pass (OHLC ordering, no gaps, checksums match)
+- [ ] Database backup exists and is restorable
+- [ ] Data date range covers at least 3 distinct market regimes
+- [ ] No duplicate candles in database
+
+## Backtest Validation
+- [ ] Total backtest runtime < 30 minutes (if longer, optimize queries)
+- [ ] Minimum 50 trades in full backtest (statistical significance)
+- [ ] Walk-forward validation shows OOS Sharpe > 1.0
+- [ ] Overfitting ratio (IS Sharpe / OOS Sharpe) < 1.5
+- [ ] Max drawdown < 20% (ideally < 15%)
+- [ ] Win rate > 35% AND profit factor > 1.2
+- [ ] Trade log exported and manually verified (spot-check 10 trades)
+
+## Strategy-Specific
+- [ ] Bollinger Bands: Tested on both ranging and trending markets
+- [ ] EMA Crossover: Win rate > 40% (simple strategies need higher win rate)
+- [ ] SuperTrend: Out-of-sample parameters differ < 20% from in-sample
+
+## Risk Management
+- [ ] Position sizing: max 2-3% per trade (not 95%)
+- [ ] Slippage assumption: 5+ bps per trade in backtest
+- [ ] Commission: 10+ bps included
+- [ ] Hard stop-loss: -3% per trade (not just portfolio DD)
+- [ ] Drawdown kill-switch: configured to stop at -15%
+
+## Code Quality
+- [ ] Code reviewed by another developer (not you)
+- [ ] All pylint/flake8 warnings resolved
+- [ ] Unit tests pass (pytest -v)
+- [ ] Logging verified (check logs/ directory has sensible entries)
+- [ ] No hardcoded credentials (all in .env)
+- [ ] No SQL injection vulnerabilities (using parameterized queries)
+
+## Infrastructure
+- [ ] Docker build successful
+- [ ] Database health checks passing
+- [ ] Containers auto-restart on failure
+- [ ] Backups automated (daily to S3)
+- [ ] Monitoring alerts configured (Slack/email)
+
+## Documentation
+- [ ] OPERATIONAL_RUNBOOK.md completed and reviewed
+- [ ] Assumptions documented (why these strategies? why these params?)
+- [ ] Known limitations documented (regime risk, overfitting risk, etc.)
+- [ ] Emergency procedures documented (how to pause, kill switch, etc.)
+
+## Testing in Testnet
+- [ ] 2+ weeks of paper trading on Binance testnet
+- [ ] Realized vs backtest Sharpe ratio documented
+- [ ] Any discrepancies > 30% investigated and explained
+- [ ] Order execution tested (latency, slippage realistic?)
+
+## Go-Live Approval
+- [ ] Backtest results reviewed by independent party
+- [ ] Risk parameters approved by you (not defaulted)
+- [ ] Initial capital is amount you can afford to lose
+- [ ] Stop-loss discipline verified (will you let it close bad trades?)
+- [ ] Monitoring plan in place (daily check-ins minimum)
+
+## Sign-Off
+Date: ________________
+Reviewed by: _________________ (print name)
+Deployed by: _________________ (print name)
+Capital deployed: $________________
