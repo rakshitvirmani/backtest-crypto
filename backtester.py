@@ -603,6 +603,18 @@ def main():
     bt = ProductionBacktester()
     results = bt.run_full_pipeline(config)
 
+    # Export trades to CSV
+    trades_df = results.get("_trades")
+    if trades_df is not None and not trades_df.empty:
+        today = datetime.now().strftime("%Y-%m-%d")
+        csv_name = f"{today}_{args.symbol}_{args.timeframe}_{args.strategy}.csv"
+        csv_path = os.path.join("data", csv_name)
+        os.makedirs("data", exist_ok=True)
+        trades_df.to_csv(csv_path, index=False)
+        print(f"\nTrades exported to: {csv_path}")
+    else:
+        print("\nNo trades to export.")
+
     print(f"\n{'='*60}")
     print(f"Strategy: {results['strategy_name']}")
     print(f"Return: {results['total_return']:.2f}%")
