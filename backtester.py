@@ -426,7 +426,7 @@ class ProductionBacktester:
             "avg_trade_pnl_pct": safe_float(stats.get("Avg. Trade [%]", np.nan)),
             "best_trade_pnl_pct": safe_float(stats.get("Best Trade [%]", np.nan)),
             "worst_trade_pnl_pct": safe_float(stats.get("Worst Trade [%]", np.nan)),
-            "max_consecutive_losses": int(stats.get("Max. Trade Duration", 0) if isinstance(stats.get("Max. Trade Duration", 0), (int, float)) else 0),
+            "max_consecutive_losses": int(safe_float(stats.get("Max. Trade Duration", 0), default=0)),
             "backtest_start": config.start_date,
             "backtest_end": config.end_date,
             "initial_capital": config.initial_capital,
