@@ -1,40 +1,13 @@
 version: '3.8'
 
 services:
-  postgres:
-    image: postgres:15-alpine
-    container_name: trading_db
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${DB_USER:-trading_user}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
-      POSTGRES_DB: ${DB_NAME:-trading_db}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
-    ports:
-      - "${DB_PORT:-5432}:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-trading_user} -d ${DB_NAME:-trading_db}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    shm_size: 256mb
-
   fetcher:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: trading_fetcher
-    depends_on:
-      postgres:
-        condition: service_healthy
     environment:
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_USER: ${DB_USER:-trading_user}
-      DB_PASSWORD: ${DB_PASSWORD:-changeme}
-      DB_NAME: ${DB_NAME:-trading_db}
+      DB_PATH: /app/data/trading.duckdb
       BINANCE_API_KEY: ${BINANCE_API_KEY}
       BINANCE_API_SECRET: ${BINANCE_API_SECRET}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -49,15 +22,8 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: trading_backtester
-    depends_on:
-      postgres:
-        condition: service_healthy
     environment:
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_USER: ${DB_USER:-trading_user}
-      DB_PASSWORD: ${DB_PASSWORD:-changeme}
-      DB_NAME: ${DB_NAME:-trading_db}
+      DB_PATH: /app/data/trading.duckdb
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
       - ./logs:/app/logs
@@ -72,15 +38,8 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: trading_optimizer
-    depends_on:
-      postgres:
-        condition: service_healthy
     environment:
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_USER: ${DB_USER:-trading_user}
-      DB_PASSWORD: ${DB_PASSWORD:-changeme}
-      DB_NAME: ${DB_NAME:-trading_db}
+      DB_PATH: /app/data/trading.duckdb
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
       - ./logs:/app/logs
@@ -89,7 +48,3 @@ services:
     command: python optimizer.py --symbol BTCUSDT --timeframe 4h
     profiles:
       - optimize
-
-volumes:
-  postgres_data:
-    driver: local

@@ -2,12 +2,12 @@
 
 ## System Overview
 
-This system fetches OHLCV data from Binance, stores it in PostgreSQL, runs backtests with walk-forward validation, and (when approved) executes live trades.
+This system fetches OHLCV data from Binance, stores it in DuckDB (an embedded analytical database), runs backtests with walk-forward validation, and (when approved) executes live trades.
 
 ## Architecture
 
 ```
-Binance API -> fetch_to_db.py -> PostgreSQL -> backtester.py -> Reports
+Binance API -> fetch_to_db.py -> DuckDB (data/trading.duckdb) -> backtester.py -> Reports
                                       |
                                       v
                                optimizer.py -> Best Parameters
@@ -18,11 +18,20 @@ Binance API -> fetch_to_db.py -> PostgreSQL -> backtester.py -> Reports
 
 ## Quick Reference
 
-### Start the system
+### Start the system (local)
 ```bash
-# Start database
-docker compose up -d postgres
+# Fetch data (creates/updates the DuckDB database automatically)
+python fetch_to_db.py
 
+# Run backtest
+python backtester.py --symbol BTCUSDT --timeframe 4h --strategy supertrend
+
+# Run optimization
+python optimizer.py --symbol BTCUSDT --timeframe 4h --strategy supertrend
+```
+
+### Start the system (Docker)
+```bash
 # Fetch data
 docker compose run --rm fetcher
 
@@ -33,14 +42,19 @@ docker compose --profile backtest run --rm backtester
 docker compose --profile optimize run --rm optimizer
 ```
 
-### Stop everything
+### Stop everything (Docker)
 ```bash
 docker compose down
 ```
 
 ### Check database
 ```bash
-docker compose exec postgres psql -U trading_user -d trading_db -c "SELECT COUNT(*) FROM klines;"
+python -c "
+import duckdb
+conn = duckdb.connect('data/trading.duckdb', read_only=True)
+print(conn.execute('SELECT COUNT(*) FROM klines').fetchone())
+conn.close()
+"
 ```
 
 ---
@@ -49,16 +63,31 @@ docker compose exec postgres psql -U trading_user -d trading_db -c "SELECT COUNT
 
 ### SOP-1: Daily Data Fetch
 
-1. Run the fetcher: `docker compose run --rm fetcher`
+1. Run the fetcher: `python fetch_to_db.py`
 2. Check logs: `tail -100 logs/backtest.log`
 3. Verify no errors in fetch_log table:
-   ```sql
-   SELECT * FROM fetch_log WHERE errors IS NOT NULL ORDER BY created_at DESC LIMIT 10;
+   ```bash
+   python -c "
+   import duckdb
+   conn = duckdb.connect('data/trading.duckdb', read_only=True)
+   print(conn.execute(\"\"\"
+       SELECT * FROM fetch_log WHERE errors IS NOT NULL
+       ORDER BY created_at DESC LIMIT 10
+   \"\"\").fetchdf().to_string())
+   conn.close()
+   "
    ```
 4. Verify data freshness:
-   ```sql
-   SELECT symbol, timeframe, MAX(open_time), COUNT(*)
-   FROM klines GROUP BY symbol, timeframe;
+   ```bash
+   python -c "
+   import duckdb
+   conn = duckdb.connect('data/trading.duckdb', read_only=True)
+   print(conn.execute(\"\"\"
+       SELECT symbol, timeframe, MAX(open_time), COUNT(*)
+       FROM klines GROUP BY symbol, timeframe
+   \"\"\").fetchdf().to_string())
+   conn.close()
+   "
    ```
 
 ### SOP-2: Running a Backtest
@@ -118,9 +147,16 @@ docker compose exec postgres psql -U trading_user -d trading_db -c "SELECT COUNT
 **Cause:** Data not fetched for that symbol/timeframe/period
 **Fix:**
 1. Check what data exists:
-   ```sql
-   SELECT MIN(open_time), MAX(open_time) FROM klines
-   WHERE symbol = 'BTCUSDT' AND timeframe = '4h';
+   ```bash
+   python -c "
+   import duckdb
+   conn = duckdb.connect('data/trading.duckdb', read_only=True)
+   print(conn.execute(\"\"\"
+       SELECT MIN(open_time), MAX(open_time) FROM klines
+       WHERE symbol = 'BTCUSDT' AND timeframe = '4h'
+   \"\"\").fetchone())
+   conn.close()
+   "
    ```
 2. Fetch missing data: `python fetch_to_db.py --symbol BTCUSDT --timeframe 4h --start "1 Jan, 2020"`
 
@@ -132,12 +168,13 @@ docker compose exec postgres psql -U trading_user -d trading_db -c "SELECT COUNT
 3. If gaps: exchange downtime; document and accept or interpolate
 4. If volume anomalies: review manually; may be legitimate
 
-### Issue: Database connection refused
-**Cause:** PostgreSQL not running or wrong credentials
+### Issue: DuckDB database locked
+**Cause:** Another process has the database file open for writing
 **Fix:**
-1. Check container: `docker compose ps`
-2. Check logs: `docker compose logs postgres`
-3. Verify .env file credentials match docker-compose.yml
+1. DuckDB only allows one write connection at a time
+2. Check for running fetcher/backtester/optimizer processes
+3. Kill any stale processes: `ps aux | grep python`
+4. If the `.wal` file exists and no processes are running, the DB will recover on next connect
 
 ---
 
@@ -152,7 +189,7 @@ docker compose exec postgres psql -U trading_user -d trading_db -c "SELECT COUNT
 
 ### EMERGENCY: Suspected data corruption
 1. Stop all backtests and live trading IMMEDIATELY
-2. Query: `SELECT * FROM klines WHERE data_checksum IS NULL;`
+2. Query: check for rows with null checksums
 3. Cross-reference with Binance API data
 4. If corruption confirmed, re-fetch affected period with `--force-backfill`
 5. Re-run all backtests that used corrupted data
@@ -170,7 +207,7 @@ docker compose exec postgres psql -U trading_user -d trading_db -c "SELECT COUNT
 
 - [ ] Data fetch completed successfully (check logs)
 - [ ] No errors in fetch_log table
-- [ ] Database size within expected range
+- [ ] Database file size within expected range
 - [ ] If live: P&L within expected range
 - [ ] If live: No alerts triggered
 - [ ] If live: Drawdown within acceptable limits
@@ -181,7 +218,7 @@ docker compose exec postgres psql -U trading_user -d trading_db -c "SELECT COUNT
 - [ ] Rolling Sharpe ratio trend
 - [ ] Slippage analysis (actual vs assumed)
 - [ ] Commission costs review
-- [ ] Database backup verified
+- [ ] Database backup verified (copy the .duckdb file)
 - [ ] System resource usage (disk, memory)
 
 ---

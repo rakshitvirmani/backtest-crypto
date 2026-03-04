@@ -7,16 +7,17 @@ If in doubt, STOP. Money lost to caution < money lost to hubris.
 
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import create_engine, text
+
+from db import get_connection, get_db_path
 
 try:
-    from config import DATABASE_URL
+    from config import DB_PATH
 except ImportError:
-    DATABASE_URL = None
+    DB_PATH = None
 
 logger = logging.getLogger("risk_manager")
 
@@ -27,8 +28,8 @@ class RiskManager:
     Every method returns a clear PASS/FAIL with reasoning.
     """
 
-    def __init__(self, db_url: str = None):
-        self.engine = create_engine(db_url or DATABASE_URL) if (db_url or DATABASE_URL) else None
+    def __init__(self, db_path: str = None):
+        self.db_path = db_path or get_db_path()
 
     # ------------------------------------------------------------------
     # Kill Switches
@@ -163,9 +164,7 @@ class RiskManager:
     def check_spread(
         bid: float, ask: float, max_spread_pct: float = 0.005
     ) -> Tuple[bool, str]:
-        """
-        Reject trades if spread is too wide (illiquid market).
-        """
+        """Reject trades if spread is too wide (illiquid market)."""
         if bid <= 0 or ask <= 0:
             return False, "Invalid bid/ask prices"
 
@@ -195,32 +194,25 @@ class RiskManager:
         max_dd_threshold: float = -0.15,
         max_position_pct: float = 0.05,
     ) -> Tuple[bool, List]:
-        """
-        Run ALL pre-trade checks. Returns (can_trade, list_of_issues).
-        """
+        """Run ALL pre-trade checks. Returns (can_trade, list_of_issues)."""
         issues = []
 
-        # Kill switch
         should_stop, dd, reason = self.check_max_drawdown(equity_curve, max_dd_threshold)
         if should_stop:
             issues.append(("CRITICAL", reason))
 
-        # Position size
         valid, reason = self.validate_position_size(capital, position_size_usd, max_position_pct)
         if not valid:
             issues.append(("ERROR", reason))
 
-        # Daily loss
         should_stop, reason = self.check_daily_loss_limit(daily_pnl)
         if should_stop:
             issues.append(("CRITICAL", reason))
 
-        # Consecutive losses
         should_pause, reason = self.check_consecutive_losses(recent_trades_pnl)
         if should_pause:
             issues.append(("WARNING", reason))
 
-        # Price sanity
         valid, reason = self.check_price_sanity(current_price, last_known_price)
         if not valid:
             issues.append(("ERROR", reason))
@@ -248,10 +240,7 @@ class RiskManager:
         sharpe_degradation_threshold: float = 0.5,
         dd_excess_threshold: float = 0.20,
     ) -> Dict:
-        """
-        Compare live performance vs backtest expectations.
-        Returns dict of alerts.
-        """
+        """Compare live performance vs backtest expectations."""
         alerts = {}
 
         if live_sharpe < sharpe_degradation_threshold:
@@ -295,11 +284,11 @@ class PreDeploymentValidator:
 
     CRITERIA = {
         "min_sharpe": 1.0,
-        "max_drawdown": -0.20,        # -20%
+        "max_drawdown": -0.20,
         "min_trades": 50,
         "min_profit_factor": 1.2,
         "min_win_rate": 0.35,
-        "max_overfit_ratio": 2.0,      # train_sharpe / test_sharpe
+        "max_overfit_ratio": 2.0,
     }
 
     @classmethod
@@ -308,49 +297,39 @@ class PreDeploymentValidator:
         backtest_results: Dict,
         oos_results: Optional[Dict] = None,
     ) -> Tuple[bool, List[str]]:
-        """
-        Returns (approved, list_of_failures).
-        ALL criteria must pass for approval.
-        """
+        """Returns (approved, list_of_failures). ALL criteria must pass."""
         failures = []
-        warnings = []
 
-        # Sharpe ratio
         sharpe = backtest_results.get("sharpe_ratio", 0)
         if sharpe < cls.CRITERIA["min_sharpe"]:
             failures.append(
                 f"Sharpe {sharpe:.2f} < {cls.CRITERIA['min_sharpe']} (required)"
             )
 
-        # Max drawdown
         max_dd = backtest_results.get("max_drawdown", 0)
-        if max_dd < cls.CRITERIA["max_drawdown"] * 100:  # stored as percentage
+        if max_dd < cls.CRITERIA["max_drawdown"] * 100:
             failures.append(
                 f"Max DD {max_dd:.1f}% exceeds {cls.CRITERIA['max_drawdown']*100:.0f}% limit"
             )
 
-        # Trade count
         trades = backtest_results.get("num_trades", 0)
         if trades < cls.CRITERIA["min_trades"]:
             failures.append(
                 f"Trade count {trades} < {cls.CRITERIA['min_trades']} (insufficient data)"
             )
 
-        # Profit factor
         pf = backtest_results.get("profit_factor", 0)
         if not np.isnan(pf) and pf < cls.CRITERIA["min_profit_factor"]:
             failures.append(
                 f"Profit factor {pf:.2f} < {cls.CRITERIA['min_profit_factor']}"
             )
 
-        # Win rate
         wr = backtest_results.get("win_rate", 0)
         if wr < cls.CRITERIA["min_win_rate"]:
             failures.append(
                 f"Win rate {wr:.1%} < {cls.CRITERIA['min_win_rate']:.0%}"
             )
 
-        # Overfit check (if OOS results provided)
         if oos_results:
             oos_sharpe = oos_results.get("sharpe_ratio", 0)
             if oos_sharpe > 0:
