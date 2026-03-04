@@ -422,7 +422,7 @@ class ProductionBacktester:
             "win_rate": win_rate,
             "profit_factor": safe_float(stats.get("Profit Factor", np.nan)),
             "num_trades": num_trades,
-            "num_winning_trades": int(num_trades * win_rate),
+            "num_winning_trades": int(num_trades * win_rate) if not np.isnan(win_rate) else 0,
             "avg_trade_pnl_pct": safe_float(stats.get("Avg. Trade [%]", np.nan)),
             "best_trade_pnl_pct": safe_float(stats.get("Best Trade [%]", np.nan)),
             "worst_trade_pnl_pct": safe_float(stats.get("Worst Trade [%]", np.nan)),
