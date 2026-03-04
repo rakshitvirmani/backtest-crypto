@@ -16,71 +16,73 @@ CREATE SEQUENCE IF NOT EXISTS equity_curve_id_seq START 1;
 
 -- Core klines table: single source of truth for all OHLCV data
 CREATE TABLE IF NOT EXISTS klines (
+<<<<<<< Updated upstream
     id BIGINT DEFAULT nextval('klines_id_seq') PRIMARY KEY,
     symbol VARCHAR(10) NOT NULL,
     timeframe VARCHAR(5) NOT NULL,
+=======
+    id INTEGER PRIMARY KEY DEFAULT nextval('klines_id_seq'),
+    symbol VARCHAR NOT NULL,
+    timeframe VARCHAR NOT NULL,
+>>>>>>> Stashed changes
     open_time BIGINT NOT NULL,
     close_time BIGINT NOT NULL,
-    open DECIMAL(20, 8) NOT NULL,
-    high DECIMAL(20, 8) NOT NULL,
-    low DECIMAL(20, 8) NOT NULL,
-    close DECIMAL(20, 8) NOT NULL,
-    volume DECIMAL(20, 8) NOT NULL,
-    quote_asset_volume DECIMAL(20, 8),
-    number_of_trades INT,
-    taker_buy_base_volume DECIMAL(20, 8),
-    taker_buy_quote_volume DECIMAL(20, 8),
-    fetch_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    data_checksum VARCHAR(64),
+    open DOUBLE NOT NULL,
+    high DOUBLE NOT NULL,
+    low DOUBLE NOT NULL,
+    close DOUBLE NOT NULL,
+    volume DOUBLE NOT NULL,
+    quote_asset_volume DOUBLE,
+    number_of_trades INTEGER,
+    taker_buy_base_volume DOUBLE,
+    taker_buy_quote_volume DOUBLE,
+    fetch_timestamp TIMESTAMP DEFAULT current_timestamp,
+    data_checksum VARCHAR,
 
-    -- Uniqueness: one candle per symbol/timeframe/timestamp
+    -- Uniqueness enforced separately via UNIQUE constraint
     UNIQUE(symbol, timeframe, open_time),
 
-    -- OHLC integrity: High is highest, Low is lowest
+    -- OHLC integrity
     CHECK (high >= low),
     CHECK (high >= open),
     CHECK (high >= close),
     CHECK (low <= open),
     CHECK (low <= close),
-
-    -- Volume must be non-negative
     CHECK (volume >= 0),
-
-    -- Timestamps must be ordered
     CHECK (close_time > open_time),
-
-    -- Prices must be positive
     CHECK (open > 0 AND high > 0 AND low > 0 AND close > 0)
 );
 
--- Primary query pattern: fetch candles by symbol+timeframe in time order
-CREATE INDEX IF NOT EXISTS idx_klines_symbol_tf_time
-    ON klines(symbol, timeframe, open_time DESC);
-
--- For monitoring data freshness
-CREATE INDEX IF NOT EXISTS idx_klines_fetch_timestamp
-    ON klines(fetch_timestamp DESC);
-
--- For gap detection queries
-CREATE INDEX IF NOT EXISTS idx_klines_symbol_tf_time_asc
-    ON klines(symbol, timeframe, open_time ASC);
+CREATE SEQUENCE IF NOT EXISTS klines_id_seq START 1;
 
 
 -- =============================================================================
 -- Backtest results table: full audit trail of every backtest run
 -- =============================================================================
+CREATE SEQUENCE IF NOT EXISTS backtest_runs_id_seq START 1;
+
 CREATE TABLE IF NOT EXISTS backtest_runs (
+<<<<<<< Updated upstream
     id BIGINT DEFAULT nextval('backtest_runs_id_seq') PRIMARY KEY,
     run_id VARCHAR(36) UNIQUE NOT NULL,
     symbol VARCHAR(10) NOT NULL,
     timeframe VARCHAR(5) NOT NULL,
     strategy_name VARCHAR(50) NOT NULL,
     strategy_params JSON NOT NULL,
+=======
+    id INTEGER PRIMARY KEY DEFAULT nextval('backtest_runs_id_seq'),
+    run_id VARCHAR UNIQUE NOT NULL,
+    symbol VARCHAR NOT NULL,
+    timeframe VARCHAR NOT NULL,
+    strategy_name VARCHAR NOT NULL,
+    strategy_params VARCHAR NOT NULL,  -- JSON stored as text
+>>>>>>> Stashed changes
     backtest_start TIMESTAMP NOT NULL,
     backtest_end TIMESTAMP NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT current_timestamp,
 
     -- Performance metrics
+<<<<<<< Updated upstream
     total_return DECIMAL(10, 4),
     annualized_return DECIMAL(10, 4),
     max_drawdown DECIMAL(10, 4),
@@ -96,53 +98,71 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     best_trade_pnl_pct DECIMAL(8, 4),
     worst_trade_pnl_pct DECIMAL(8, 4),
     max_consecutive_losses INT,
+=======
+    total_return DOUBLE,
+    annualized_return DOUBLE,
+    max_drawdown DOUBLE,
+    sharpe_ratio DOUBLE,
+    sortino_ratio DOUBLE,
+    calmar_ratio DOUBLE,
+    win_rate DOUBLE,
+    profit_factor DOUBLE,
+    num_trades INTEGER,
+    num_winning_trades INTEGER,
+    avg_trade_pnl_pct DOUBLE,
+    best_trade_pnl_pct DOUBLE,
+    worst_trade_pnl_pct DOUBLE,
+    max_consecutive_losses INTEGER,
+>>>>>>> Stashed changes
 
-    -- Configuration snapshot (for reproducibility)
-    initial_capital DECIMAL(20, 8),
-    slippage_pct DECIMAL(8, 4),
-    commission_pct DECIMAL(8, 4),
+    -- Configuration snapshot
+    initial_capital DOUBLE,
+    slippage_pct DOUBLE,
+    commission_pct DOUBLE,
 
     -- Validation & approval workflow
-    validation_status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
-    validation_notes TEXT,
+    validation_status VARCHAR NOT NULL DEFAULT 'PENDING',
+    validation_notes VARCHAR,
     approved_for_live BOOLEAN DEFAULT FALSE,
-    approved_by VARCHAR(100),
+    approved_by VARCHAR,
     approved_at TIMESTAMP,
 
     CHECK (validation_status IN ('PENDING', 'PASSED', 'FAILED', 'FLAGGED'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_backtest_symbol_strategy
-    ON backtest_runs(symbol, strategy_name, created_at DESC);
-
-CREATE INDEX IF NOT EXISTS idx_backtest_validation
-    ON backtest_runs(validation_status, approved_for_live);
-
 
 -- =============================================================================
 -- Trade execution log: every simulated (and later live) trade
 -- =============================================================================
+CREATE SEQUENCE IF NOT EXISTS trade_log_id_seq START 1;
+
 CREATE TABLE IF NOT EXISTS trade_log (
+<<<<<<< Updated upstream
     id BIGINT DEFAULT nextval('trade_log_id_seq') PRIMARY KEY,
     backtest_run_id BIGINT REFERENCES backtest_runs(id),
     trade_number INT NOT NULL,
+=======
+    id INTEGER PRIMARY KEY DEFAULT nextval('trade_log_id_seq'),
+    backtest_run_id INTEGER,
+    trade_number INTEGER NOT NULL,
+>>>>>>> Stashed changes
     entry_time TIMESTAMP NOT NULL,
     exit_time TIMESTAMP NOT NULL,
-    entry_price DECIMAL(20, 8) NOT NULL,
-    exit_price DECIMAL(20, 8) NOT NULL,
-    position_size DECIMAL(20, 8) NOT NULL,
-    direction VARCHAR(5) NOT NULL DEFAULT 'LONG',
-    pnl DECIMAL(20, 8) NOT NULL,
-    pnl_percent DECIMAL(8, 4) NOT NULL,
-    commission_paid DECIMAL(20, 8) DEFAULT 0,
-    slippage_cost DECIMAL(20, 8) DEFAULT 0,
-    trade_reason TEXT,
+    entry_price DOUBLE NOT NULL,
+    exit_price DOUBLE NOT NULL,
+    position_size DOUBLE NOT NULL,
+    direction VARCHAR NOT NULL DEFAULT 'LONG',
+    pnl DOUBLE NOT NULL,
+    pnl_percent DOUBLE NOT NULL,
+    commission_paid DOUBLE DEFAULT 0,
+    slippage_cost DOUBLE DEFAULT 0,
+    trade_reason VARCHAR,
     is_winning_trade BOOLEAN,
-    entry_signal VARCHAR(50),
-    exit_signal VARCHAR(50),
-    equity_at_entry DECIMAL(20, 8),
-    equity_at_exit DECIMAL(20, 8),
-    drawdown_at_entry DECIMAL(8, 4),
+    entry_signal VARCHAR,
+    exit_signal VARCHAR,
+    equity_at_entry DOUBLE,
+    equity_at_exit DOUBLE,
+    drawdown_at_entry DOUBLE,
 
     CHECK (direction IN ('LONG', 'SHORT')),
     CHECK (exit_time >= entry_time),
@@ -150,45 +170,51 @@ CREATE TABLE IF NOT EXISTS trade_log (
     CHECK (position_size > 0)
 );
 
-CREATE INDEX IF NOT EXISTS idx_trade_log_run
-    ON trade_log(backtest_run_id, trade_number);
-
 
 -- =============================================================================
 -- Data fetch audit log: track every API call for debugging
 -- =============================================================================
+CREATE SEQUENCE IF NOT EXISTS fetch_log_id_seq START 1;
+
 CREATE TABLE IF NOT EXISTS fetch_log (
+<<<<<<< Updated upstream
     id BIGINT DEFAULT nextval('fetch_log_id_seq') PRIMARY KEY,
     symbol VARCHAR(10) NOT NULL,
     timeframe VARCHAR(5) NOT NULL,
+=======
+    id INTEGER PRIMARY KEY DEFAULT nextval('fetch_log_id_seq'),
+    symbol VARCHAR NOT NULL,
+    timeframe VARCHAR NOT NULL,
+>>>>>>> Stashed changes
     fetch_start TIMESTAMP NOT NULL,
     fetch_end TIMESTAMP NOT NULL,
-    http_status INT,
-    response_time_ms INT,
-    records_fetched INT DEFAULT 0,
-    records_upserted INT DEFAULT 0,
-    errors TEXT,
-    checksum VARCHAR(64),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    http_status INTEGER,
+    response_time_ms INTEGER,
+    records_fetched INTEGER DEFAULT 0,
+    records_upserted INTEGER DEFAULT 0,
+    errors VARCHAR,
+    checksum VARCHAR,
+    created_at TIMESTAMP DEFAULT current_timestamp
 );
 
-CREATE INDEX IF NOT EXISTS idx_fetch_log_time
-    ON fetch_log(created_at DESC);
-
 
 -- =============================================================================
--- Equity curve snapshots: for post-backtest analysis and reporting
+-- Equity curve snapshots
 -- =============================================================================
+CREATE SEQUENCE IF NOT EXISTS equity_curve_id_seq START 1;
+
 CREATE TABLE IF NOT EXISTS equity_curve (
+<<<<<<< Updated upstream
     id BIGINT DEFAULT nextval('equity_curve_id_seq') PRIMARY KEY,
     backtest_run_id BIGINT REFERENCES backtest_runs(id),
+=======
+    id INTEGER PRIMARY KEY DEFAULT nextval('equity_curve_id_seq'),
+    backtest_run_id INTEGER,
+>>>>>>> Stashed changes
     timestamp TIMESTAMP NOT NULL,
-    equity DECIMAL(20, 8) NOT NULL,
-    drawdown_pct DECIMAL(8, 4),
+    equity DOUBLE NOT NULL,
+    drawdown_pct DOUBLE,
     position_open BOOLEAN DEFAULT FALSE,
 
     UNIQUE(backtest_run_id, timestamp)
 );
-
-CREATE INDEX IF NOT EXISTS idx_equity_curve_run
-    ON equity_curve(backtest_run_id, timestamp);

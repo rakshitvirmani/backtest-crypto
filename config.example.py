@@ -5,7 +5,12 @@ NEVER commit config.py to version control.
 """
 import os
 
+<<<<<<< Updated upstream
 # Database Configuration (DuckDB - embedded, no server needed)
+=======
+# Database Configuration - DuckDB (embedded, no server needed)
+# Path to the DuckDB database file
+>>>>>>> Stashed changes
 DB_PATH = os.getenv("DB_PATH", "data/trading.duckdb")
 
 # Binance API Configuration
@@ -15,7 +20,7 @@ BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 # Data Fetch Settings
 SYMBOLS = ["BTCUSDT"]
 TIMEFRAMES = ["1h", "4h", "1d", "1w", "1M"]
-MAX_BACKFILL_DAYS = 7  # Never backfill beyond this without explicit flag
+MAX_BACKFILL_DAYS = 2000  # Never backfill beyond this without explicit flag
 RATE_LIMIT_REQUESTS_PER_MIN = 1200
 RATE_LIMIT_SAFETY_MARGIN = 0.85  # Pause at 85% of limit
 

@@ -13,3 +13,4 @@ build/
 *.duckdb
 *.duckdb.wal
 reports/
+.claude/

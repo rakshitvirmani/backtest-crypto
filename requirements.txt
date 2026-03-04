@@ -5,15 +5,21 @@
 python-binance==1.0.19
 requests==2.31.0
 
+<<<<<<< Updated upstream
 # Database (embedded - no server needed)
 duckdb==1.2.1
+=======
+# Database
+sqlalchemy>=2.0.36
+psycopg2-binary>=2.9.10
+>>>>>>> Stashed changes
 
 # Data processing
-pandas==2.2.0
-numpy==1.26.3
+pandas
+numpy
 
 # Technical analysis
-pandas-ta==0.3.14b1
+pandas-ta
 
 # Backtesting engine
 backtesting==0.3.3
