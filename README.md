@@ -6,7 +6,7 @@ Database-first backtesting system designed for safety-first live trading deploym
 
 ```
 ┌─────────────┐     ┌──────────────┐     ┌─────────────────┐
-│  Binance API │────>│ fetch_to_db  │────>│   PostgreSQL    │
+│  Binance API │────>│ fetch_to_db  │────>│     DuckDB      │
 │  (OHLCV)    │     │  + Validation│     │  (klines, runs) │
 └─────────────┘     └──────────────┘     └────────┬────────┘
                                                    │
@@ -36,32 +36,43 @@ cp config.example.py config.py
 cp .env.example .env
 # Edit both files with your credentials
 
-# 2. Start database
-docker compose up -d postgres
+# 2. Fetch data (initialises the DuckDB database automatically)
+python fetch_to_db.py
 
-# 3. Fetch data
-docker compose run --rm fetcher
-
-# 4. Run a backtest
+# 3. Run a backtest
 python backtester.py --symbol BTCUSDT --timeframe 4h --strategy supertrend
 
-# 5. Optimize parameters
+# 4. Optimize parameters
 python optimizer.py --symbol BTCUSDT --timeframe 4h --strategy supertrend
 
-# 6. Generate reports
+# 5. Generate reports
 python report_generator.py <RUN_ID> --report all
+```
+
+### Using Docker
+
+```bash
+# Fetch data
+docker compose run --rm fetcher
+
+# Run backtest
+docker compose --profile backtest run --rm backtester
+
+# Run optimization
+docker compose --profile optimize run --rm optimizer
 ```
 
 ## Components
 
 | File | Purpose |
 |------|---------|
+| `db.py` | DuckDB connection management and schema initialisation |
 | `fetch_to_db.py` | Data ingestion with retry, validation, circuit breaker |
 | `backtester.py` | Core backtesting engine with 5 strategies |
 | `optimizer.py` | Walk-forward parameter optimization |
 | `risk_manager.py` | Kill switches and pre-trade checks |
 | `report_generator.py` | Trade logs, equity curves, HTML reports |
-| `schema.sql` | PostgreSQL schema with integrity constraints |
+| `schema.sql` | DuckDB schema with integrity constraints |
 | `config.example.py` | Configuration template |
 
 ## Strategies

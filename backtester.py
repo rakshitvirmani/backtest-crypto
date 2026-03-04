@@ -2,7 +2,7 @@
 backtester.py - Production-Grade Backtesting Engine
 =====================================================
 Architecture:
-  - Data Layer: fetches from PostgreSQL, validates before use
+  - Data Layer: fetches from DuckDB, validates before use
   - Strategy Layer: pluggable strategies via backtesting.py's Strategy class
   - Execution Layer: realistic slippage, commission, position sizing
   - Reporting Layer: full audit trail to DB, every trade logged with reasoning
@@ -19,17 +19,17 @@ import logging
 from datetime import datetime
 from uuid import uuid4
 from typing import Dict, List, Tuple, Optional, Type
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import pandas as pd
 import numpy as np
 import pandas_ta as ta
-from sqlalchemy import create_engine, text
-from sqlalchemy.exc import SQLAlchemyError
 from backtesting import Backtest, Strategy
 
+from db import get_connection, get_db_path, init_schema
+
 try:
-    from config import DATABASE_URL, LOG_LEVEL, LOG_FILE
+    from config import DB_PATH, LOG_LEVEL, LOG_FILE
 except ImportError:
     print("ERROR: config.py not found.")
     sys.exit(1)
@@ -165,7 +165,6 @@ class BollingerBandsStrategy(Strategy):
             self.bb_middle = self.I(lambda: bb.iloc[:, 1].values)
             self.bb_upper = self.I(lambda: bb.iloc[:, 2].values)
         else:
-            # Fallback: manual calculation
             sma = close.rolling(self.bb_length).mean()
             std = close.rolling(self.bb_length).std()
             self.bb_lower = self.I(lambda: (sma - self.bb_std * std).values)
@@ -176,7 +175,6 @@ class BollingerBandsStrategy(Strategy):
         price = self.data.Close[-1]
         if np.isnan(self.bb_lower[-1]) or np.isnan(self.bb_upper[-1]):
             return
-
         if not self.position:
             if price <= self.bb_lower[-1]:
                 self.buy()
@@ -186,12 +184,7 @@ class BollingerBandsStrategy(Strategy):
 
 
 class EMACrossoverStrategy(Strategy):
-    """
-    EMA 9/21 Crossover (Trend Following)
-    - Buy when fast EMA crosses above slow EMA
-    - Sell when fast EMA crosses below slow EMA
-    Parameters: ema_fast (int), ema_slow (int)
-    """
+    """EMA 9/21 Crossover (Trend Following)"""
     ema_fast = 9
     ema_slow = 21
 
@@ -213,12 +206,7 @@ class EMACrossoverStrategy(Strategy):
 
 
 class SuperTrendStrategy(Strategy):
-    """
-    SuperTrend Strategy
-    - Buy when SuperTrend flips to uptrend
-    - Sell when SuperTrend flips to downtrend
-    Parameters: st_length (int), st_multiplier (float)
-    """
+    """SuperTrend Strategy"""
     st_length = 10
     st_multiplier = 3.0
 
@@ -228,15 +216,12 @@ class SuperTrendStrategy(Strategy):
         close = pd.Series(self.data.Close, dtype=float)
         st = ta.supertrend(high, low, close, length=self.st_length, multiplier=self.st_multiplier)
         if st is not None and len(st.columns) >= 3:
-            # Column index 1 = direction, index 2 = trend (1=up, -1=down) in pandas_ta
-            # Actual column names: SUPERTd_{length}_{mult}
             trend_col = [c for c in st.columns if c.startswith("SUPERTd")]
             if trend_col:
                 self.trend = self.I(lambda: st[trend_col[0]].values)
             else:
                 self.trend = self.I(lambda: st.iloc[:, 1].values)
         else:
-            # Fallback: simple ATR breakout
             atr = ta.atr(high, low, close, length=self.st_length)
             sma = close.rolling(self.st_length).mean()
             self.trend = self.I(lambda: np.where(close > sma + self.st_multiplier * atr, 1, -1))
@@ -252,12 +237,7 @@ class SuperTrendStrategy(Strategy):
 
 
 class RSIMeanReversionStrategy(Strategy):
-    """
-    RSI Mean Reversion
-    - Buy when RSI < oversold threshold
-    - Sell when RSI > overbought threshold
-    Parameters: rsi_length (int), rsi_oversold (float), rsi_overbought (float)
-    """
+    """RSI Mean Reversion"""
     rsi_length = 14
     rsi_oversold = 30.0
     rsi_overbought = 70.0
@@ -278,12 +258,7 @@ class RSIMeanReversionStrategy(Strategy):
 
 
 class MACDStrategy(Strategy):
-    """
-    MACD Crossover
-    - Buy when MACD line crosses above signal line
-    - Sell when MACD line crosses below signal line
-    Parameters: macd_fast (int), macd_slow (int), macd_signal (int)
-    """
+    """MACD Crossover"""
     macd_fast = 12
     macd_slow = 26
     macd_signal = 9
@@ -338,33 +313,28 @@ STRATEGY_REGISTRY: Dict[str, Type[Strategy]] = {
 class ProductionBacktester:
     """Main backtesting orchestrator with validation and audit trails."""
 
-    def __init__(self, db_connection_string: str = None):
-        self.engine = create_engine(db_connection_string or DATABASE_URL)
+    def __init__(self, db_path: str = None):
+        self.db_path = db_path or DB_PATH
         self.run_id = str(uuid4())
+        init_schema(self.db_path)
         logger.info(f"Backtest run initialized: {self.run_id}")
 
     def fetch_data(self, config: BacktestConfig) -> pd.DataFrame:
         """Query database with pre-backtest validation."""
-        query = text("""
-            SELECT
-                open_time, close_time, open, high, low, close, volume
-            FROM klines
-            WHERE symbol = :symbol
-              AND timeframe = :timeframe
-              AND open_time >= :start_ms
-              AND open_time <= :end_ms
-            ORDER BY open_time ASC
-        """)
-
         start_ms = int(config.start_date.timestamp() * 1000)
         end_ms = int(config.end_date.timestamp() * 1000)
 
-        with self.engine.connect() as conn:
-            df = pd.read_sql(
-                query, conn,
-                params={"symbol": config.symbol, "timeframe": config.timeframe,
-                         "start_ms": start_ms, "end_ms": end_ms}
-            )
+        conn = get_connection(self.db_path)
+        try:
+            df = conn.execute("""
+                SELECT open_time, close_time, open, high, low, close, volume
+                FROM klines
+                WHERE symbol = ? AND timeframe = ?
+                  AND open_time >= ? AND open_time <= ?
+                ORDER BY open_time ASC
+            """, [config.symbol, config.timeframe, start_ms, end_ms]).fetchdf()
+        finally:
+            conn.close()
 
         if df.empty:
             raise ValueError(
@@ -416,22 +386,17 @@ class ProductionBacktester:
             f"{config.strategy_name} {config.strategy_params} on {config.symbol} {config.timeframe}"
         )
 
-        # Fetch data if not provided
         if data is None:
             data = self.fetch_data(config)
 
-        # Run backtest
         bt = Backtest(
-            data,
-            strategy_class,
+            data, strategy_class,
             cash=config.initial_capital,
             commission=config.commission_pct / 100,
             exclusive_orders=True,
         )
-
         stats = bt.run(**config.strategy_params)
 
-        # Extract metrics safely
         def safe_float(val, default=np.nan):
             try:
                 v = float(val)
@@ -467,7 +432,7 @@ class ProductionBacktester:
             "initial_capital": config.initial_capital,
             "slippage_pct": config.slippage_pct,
             "commission_pct": config.commission_pct,
-            "_stats": stats,  # keep raw stats for reporting
+            "_stats": stats,
             "_trades": stats._trades if hasattr(stats, "_trades") else None,
             "_equity_curve": stats._equity_curve if hasattr(stats, "_equity_curve") else None,
         }
@@ -479,40 +444,28 @@ class ProductionBacktester:
             f"MaxDD={results['max_drawdown']:.2f}%, "
             f"Trades={results['num_trades']}"
         )
-
         return results
 
     def validate_results(self, results: Dict) -> Tuple[str, List[str]]:
-        """
-        Production-grade validation.
-        Returns (status, notes) where status in ('PASSED', 'FAILED', 'FLAGGED').
-        """
+        """Production-grade validation. Returns (status, notes)."""
         notes = []
 
-        # Hard failures
         if results["num_trades"] < 5:
             return "FAILED", ["Too few trades (< 5) — insufficient statistical significance"]
-
         if results["max_drawdown"] < -50:
             return "FAILED", [f"Max drawdown {results['max_drawdown']:.1f}% exceeds -50% — too risky"]
-
         if results["total_return"] < -30:
             return "FAILED", [f"Total return {results['total_return']:.1f}% — strategy loses money"]
 
-        # Warnings (FLAGGED)
         if results["sharpe_ratio"] < 1.0:
             notes.append(f"Low Sharpe ratio ({results['sharpe_ratio']:.2f}) — consider refinement")
-
         if results["win_rate"] < 0.35:
             notes.append(f"Win rate below 35% ({results['win_rate']:.1%}) — verify profit factor")
-
         pf = results.get("profit_factor", np.nan)
         if not np.isnan(pf) and pf < 1.2:
             notes.append(f"Low profit factor ({pf:.2f}) — risk/reward unfavorable")
-
         if results["num_trades"] < 50:
             notes.append(f"Trade count ({results['num_trades']}) below 50 — limited statistical confidence")
-
         if results["max_drawdown"] < -20:
             notes.append(f"Max drawdown ({results['max_drawdown']:.1f}%) exceeds -20% threshold")
 
@@ -522,62 +475,39 @@ class ProductionBacktester:
 
     def store_results(self, results: Dict, status: str, notes: List[str]) -> str:
         """Persist results to database for audit trail."""
-        insert_sql = text("""
-            INSERT INTO backtest_runs (
-                run_id, symbol, timeframe, strategy_name, strategy_params,
-                backtest_start, backtest_end, total_return, annualized_return,
-                max_drawdown, sharpe_ratio, sortino_ratio, calmar_ratio,
-                win_rate, profit_factor, num_trades, num_winning_trades,
-                avg_trade_pnl_pct, best_trade_pnl_pct, worst_trade_pnl_pct,
-                initial_capital, slippage_pct, commission_pct,
-                validation_status, validation_notes
-            ) VALUES (
-                :run_id, :symbol, :timeframe, :strategy_name, :strategy_params,
-                :backtest_start, :backtest_end, :total_return, :annualized_return,
-                :max_drawdown, :sharpe_ratio, :sortino_ratio, :calmar_ratio,
-                :win_rate, :profit_factor, :num_trades, :num_winning_trades,
-                :avg_trade_pnl_pct, :best_trade_pnl_pct, :worst_trade_pnl_pct,
-                :initial_capital, :slippage_pct, :commission_pct,
-                :validation_status, :validation_notes
-            )
-        """)
-
-        params = {
-            "run_id": results["run_id"],
-            "symbol": results["symbol"],
-            "timeframe": results["timeframe"],
-            "strategy_name": results["strategy_name"],
-            "strategy_params": json.dumps(results["strategy_params"]),
-            "backtest_start": results["backtest_start"],
-            "backtest_end": results["backtest_end"],
-            "total_return": results["total_return"],
-            "annualized_return": results["annualized_return"],
-            "max_drawdown": results["max_drawdown"],
-            "sharpe_ratio": results["sharpe_ratio"],
-            "sortino_ratio": results.get("sortino_ratio"),
-            "calmar_ratio": results.get("calmar_ratio"),
-            "win_rate": results["win_rate"],
-            "profit_factor": results.get("profit_factor"),
-            "num_trades": results["num_trades"],
-            "num_winning_trades": results["num_winning_trades"],
-            "avg_trade_pnl_pct": results.get("avg_trade_pnl_pct"),
-            "best_trade_pnl_pct": results.get("best_trade_pnl_pct"),
-            "worst_trade_pnl_pct": results.get("worst_trade_pnl_pct"),
-            "initial_capital": results["initial_capital"],
-            "slippage_pct": results["slippage_pct"],
-            "commission_pct": results["commission_pct"],
-            "validation_status": status,
-            "validation_notes": "\n".join(notes) if notes else None,
-        }
-
+        conn = get_connection(self.db_path)
         try:
-            with self.engine.begin() as conn:
-                conn.execute(insert_sql, params)
+            conn.execute("""
+                INSERT INTO backtest_runs (
+                    run_id, symbol, timeframe, strategy_name, strategy_params,
+                    backtest_start, backtest_end, total_return, annualized_return,
+                    max_drawdown, sharpe_ratio, sortino_ratio, calmar_ratio,
+                    win_rate, profit_factor, num_trades, num_winning_trades,
+                    avg_trade_pnl_pct, best_trade_pnl_pct, worst_trade_pnl_pct,
+                    initial_capital, slippage_pct, commission_pct,
+                    validation_status, validation_notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, [
+                results["run_id"], results["symbol"], results["timeframe"],
+                results["strategy_name"], json.dumps(results["strategy_params"]),
+                results["backtest_start"], results["backtest_end"],
+                results["total_return"], results["annualized_return"],
+                results["max_drawdown"], results["sharpe_ratio"],
+                results.get("sortino_ratio"), results.get("calmar_ratio"),
+                results["win_rate"], results.get("profit_factor"),
+                results["num_trades"], results["num_winning_trades"],
+                results.get("avg_trade_pnl_pct"), results.get("best_trade_pnl_pct"),
+                results.get("worst_trade_pnl_pct"),
+                results["initial_capital"], results["slippage_pct"],
+                results["commission_pct"],
+                status, "\n".join(notes) if notes else None,
+            ])
             logger.info(f"Results stored in DB. Run ID: {results['run_id']}")
-        except SQLAlchemyError as e:
+        except Exception as e:
             logger.error(f"Failed to store results: {e}")
             raise
-
+        finally:
+            conn.close()
         return results["run_id"]
 
     def store_trades(self, results: Dict, backtest_run_db_id: int = None):
@@ -587,26 +517,12 @@ class ProductionBacktester:
             logger.warning("No trades to store")
             return
 
-        insert_sql = text("""
-            INSERT INTO trade_log (
-                backtest_run_id, trade_number, entry_time, exit_time,
-                entry_price, exit_price, position_size, direction,
-                pnl, pnl_percent, is_winning_trade,
-                entry_signal, exit_signal
-            ) VALUES (
-                :backtest_run_id, :trade_number, :entry_time, :exit_time,
-                :entry_price, :exit_price, :position_size, :direction,
-                :pnl, :pnl_percent, :is_winning_trade,
-                :entry_signal, :exit_signal
-            )
-        """)
-
-        # Get the DB id for this run
-        if backtest_run_db_id is None:
-            with self.engine.connect() as conn:
+        conn = get_connection(self.db_path)
+        try:
+            if backtest_run_db_id is None:
                 row = conn.execute(
-                    text("SELECT id FROM backtest_runs WHERE run_id = :rid"),
-                    {"rid": results["run_id"]}
+                    "SELECT id FROM backtest_runs WHERE run_id = ?",
+                    [results["run_id"]]
                 ).fetchone()
                 if row:
                     backtest_run_db_id = row[0]
@@ -614,34 +530,34 @@ class ProductionBacktester:
                     logger.error("Could not find backtest_run_id in DB")
                     return
 
-        try:
-            with self.engine.begin() as conn:
-                for i, trade in trades_df.iterrows():
-                    pnl_pct = float(trade.get("ReturnPct", 0)) * 100
-                    conn.execute(insert_sql, {
-                        "backtest_run_id": backtest_run_db_id,
-                        "trade_number": i + 1,
-                        "entry_time": trade.get("EntryTime", trade.get("EntryBar")),
-                        "exit_time": trade.get("ExitTime", trade.get("ExitBar")),
-                        "entry_price": float(trade.get("EntryPrice", 0)),
-                        "exit_price": float(trade.get("ExitPrice", 0)),
-                        "position_size": float(trade.get("Size", 0)),
-                        "direction": "LONG" if float(trade.get("Size", 0)) > 0 else "SHORT",
-                        "pnl": float(trade.get("PnL", 0)),
-                        "pnl_percent": pnl_pct,
-                        "is_winning_trade": pnl_pct > 0,
-                        "entry_signal": results["strategy_name"],
-                        "exit_signal": results["strategy_name"],
-                    })
+            for i, trade in trades_df.iterrows():
+                pnl_pct = float(trade.get("ReturnPct", 0)) * 100
+                conn.execute("""
+                    INSERT INTO trade_log (
+                        backtest_run_id, trade_number, entry_time, exit_time,
+                        entry_price, exit_price, position_size, direction,
+                        pnl, pnl_percent, is_winning_trade,
+                        entry_signal, exit_signal
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, [
+                    backtest_run_db_id, i + 1,
+                    trade.get("EntryTime", trade.get("EntryBar")),
+                    trade.get("ExitTime", trade.get("ExitBar")),
+                    float(trade.get("EntryPrice", 0)),
+                    float(trade.get("ExitPrice", 0)),
+                    float(abs(trade.get("Size", 0))),
+                    "LONG" if float(trade.get("Size", 0)) > 0 else "SHORT",
+                    float(trade.get("PnL", 0)), pnl_pct, pnl_pct > 0,
+                    results["strategy_name"], results["strategy_name"],
+                ])
             logger.info(f"Stored {len(trades_df)} trades for run {results['run_id'][:8]}")
-        except SQLAlchemyError as e:
+        except Exception as e:
             logger.error(f"Failed to store trades: {e}")
+        finally:
+            conn.close()
 
     def run_full_pipeline(self, config: BacktestConfig) -> Dict:
-        """
-        Complete pipeline: fetch -> backtest -> validate -> store.
-        Returns results dict with validation status.
-        """
+        """Complete pipeline: fetch -> backtest -> validate -> store."""
         results = self.run_backtest(config)
         status, notes = self.validate_results(results)
         results["validation_status"] = status

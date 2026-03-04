@@ -5,16 +5,8 @@ NEVER commit config.py to version control.
 """
 import os
 
-# Database Configuration (override with env vars)
-DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = int(os.getenv("DB_PORT", "5432"))
-DB_USER = os.getenv("DB_USER", "trading_user")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "CHANGE_ME")
-DB_NAME = os.getenv("DB_NAME", "trading_db")
-
-DATABASE_URL = (
-    f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-)
+# Database Configuration (DuckDB - embedded, no server needed)
+DB_PATH = os.getenv("DB_PATH", "data/trading.duckdb")
 
 # Binance API Configuration
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")

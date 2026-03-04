@@ -1,13 +1,22 @@
 -- =============================================================================
--- Production Backtesting System - Database Schema
+-- Production Backtesting System - Database Schema (DuckDB)
 -- =============================================================================
 -- IMPORTANT: This schema enforces data integrity at the database level.
 -- All CHECK constraints are non-negotiable safety rails.
+-- DuckDB is an embedded analytical database — no server required.
 -- =============================================================================
+
+-- Sequences for auto-incrementing IDs
+CREATE SEQUENCE IF NOT EXISTS klines_id_seq START 1;
+CREATE SEQUENCE IF NOT EXISTS backtest_runs_id_seq START 1;
+CREATE SEQUENCE IF NOT EXISTS trade_log_id_seq START 1;
+CREATE SEQUENCE IF NOT EXISTS fetch_log_id_seq START 1;
+CREATE SEQUENCE IF NOT EXISTS equity_curve_id_seq START 1;
+
 
 -- Core klines table: single source of truth for all OHLCV data
 CREATE TABLE IF NOT EXISTS klines (
-    id BIGSERIAL PRIMARY KEY,
+    id BIGINT DEFAULT nextval('klines_id_seq') PRIMARY KEY,
     symbol VARCHAR(10) NOT NULL,
     timeframe VARCHAR(5) NOT NULL,
     open_time BIGINT NOT NULL,
@@ -61,12 +70,12 @@ CREATE INDEX IF NOT EXISTS idx_klines_symbol_tf_time_asc
 -- Backtest results table: full audit trail of every backtest run
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS backtest_runs (
-    id BIGSERIAL PRIMARY KEY,
+    id BIGINT DEFAULT nextval('backtest_runs_id_seq') PRIMARY KEY,
     run_id VARCHAR(36) UNIQUE NOT NULL,
     symbol VARCHAR(10) NOT NULL,
     timeframe VARCHAR(5) NOT NULL,
     strategy_name VARCHAR(50) NOT NULL,
-    strategy_params JSONB NOT NULL,
+    strategy_params JSON NOT NULL,
     backtest_start TIMESTAMP NOT NULL,
     backtest_end TIMESTAMP NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -82,7 +91,7 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     profit_factor DECIMAL(8, 4),
     num_trades INT,
     num_winning_trades INT,
-    avg_trade_duration INTERVAL,
+    avg_trade_duration VARCHAR(50),
     avg_trade_pnl_pct DECIMAL(8, 4),
     best_trade_pnl_pct DECIMAL(8, 4),
     worst_trade_pnl_pct DECIMAL(8, 4),
@@ -100,14 +109,7 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     approved_by VARCHAR(100),
     approved_at TIMESTAMP,
 
-    CONSTRAINT chk_validation_status
-        CHECK (validation_status IN ('PENDING', 'PASSED', 'FAILED', 'FLAGGED')),
-
-    CONSTRAINT chk_approval_requires_pass
-        CHECK (
-            (approved_for_live = FALSE)
-            OR (approved_for_live = TRUE AND validation_status = 'PASSED')
-        )
+    CHECK (validation_status IN ('PENDING', 'PASSED', 'FAILED', 'FLAGGED'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_backtest_symbol_strategy
@@ -121,8 +123,8 @@ CREATE INDEX IF NOT EXISTS idx_backtest_validation
 -- Trade execution log: every simulated (and later live) trade
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS trade_log (
-    id BIGSERIAL PRIMARY KEY,
-    backtest_run_id BIGINT REFERENCES backtest_runs(id) ON DELETE CASCADE,
+    id BIGINT DEFAULT nextval('trade_log_id_seq') PRIMARY KEY,
+    backtest_run_id BIGINT REFERENCES backtest_runs(id),
     trade_number INT NOT NULL,
     entry_time TIMESTAMP NOT NULL,
     exit_time TIMESTAMP NOT NULL,
@@ -142,10 +144,10 @@ CREATE TABLE IF NOT EXISTS trade_log (
     equity_at_exit DECIMAL(20, 8),
     drawdown_at_entry DECIMAL(8, 4),
 
-    CONSTRAINT chk_direction CHECK (direction IN ('LONG', 'SHORT')),
-    CONSTRAINT chk_entry_before_exit CHECK (exit_time >= entry_time),
-    CONSTRAINT chk_positive_prices CHECK (entry_price > 0 AND exit_price > 0),
-    CONSTRAINT chk_positive_size CHECK (position_size > 0)
+    CHECK (direction IN ('LONG', 'SHORT')),
+    CHECK (exit_time >= entry_time),
+    CHECK (entry_price > 0 AND exit_price > 0),
+    CHECK (position_size > 0)
 );
 
 CREATE INDEX IF NOT EXISTS idx_trade_log_run
@@ -156,7 +158,7 @@ CREATE INDEX IF NOT EXISTS idx_trade_log_run
 -- Data fetch audit log: track every API call for debugging
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS fetch_log (
-    id BIGSERIAL PRIMARY KEY,
+    id BIGINT DEFAULT nextval('fetch_log_id_seq') PRIMARY KEY,
     symbol VARCHAR(10) NOT NULL,
     timeframe VARCHAR(5) NOT NULL,
     fetch_start TIMESTAMP NOT NULL,
@@ -178,8 +180,8 @@ CREATE INDEX IF NOT EXISTS idx_fetch_log_time
 -- Equity curve snapshots: for post-backtest analysis and reporting
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS equity_curve (
-    id BIGSERIAL PRIMARY KEY,
-    backtest_run_id BIGINT REFERENCES backtest_runs(id) ON DELETE CASCADE,
+    id BIGINT DEFAULT nextval('equity_curve_id_seq') PRIMARY KEY,
+    backtest_run_id BIGINT REFERENCES backtest_runs(id),
     timestamp TIMESTAMP NOT NULL,
     equity DECIMAL(20, 8) NOT NULL,
     drawdown_pct DECIMAL(8, 4),

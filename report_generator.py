@@ -21,12 +21,13 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 import numpy as np
-from sqlalchemy import create_engine, text
+
+from db import get_connection, get_db_path
 
 try:
-    from config import DATABASE_URL, LOG_FILE
+    from config import DB_PATH, LOG_FILE
 except ImportError:
-    DATABASE_URL = None
+    DB_PATH = None
     LOG_FILE = "logs/backtest.log"
 
 logger = logging.getLogger("report_generator")
@@ -35,8 +36,8 @@ logger = logging.getLogger("report_generator")
 class ReportGenerator:
     """Generate comprehensive backtest reports from database records."""
 
-    def __init__(self, db_url: str = None, output_dir: str = "reports"):
-        self.engine = create_engine(db_url or DATABASE_URL) if (db_url or DATABASE_URL) else None
+    def __init__(self, db_path: str = None, output_dir: str = "reports"):
+        self.db_path = db_path or get_db_path()
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
 
@@ -45,22 +46,23 @@ class ReportGenerator:
     # ------------------------------------------------------------------
     def export_trade_log(self, run_id: str, output_path: str = None) -> pd.DataFrame:
         """Export every trade for a backtest run to CSV."""
-        query = text("""
-            SELECT
-                tl.trade_number, tl.entry_time, tl.exit_time,
-                tl.entry_price, tl.exit_price, tl.position_size,
-                tl.direction, tl.pnl, tl.pnl_percent,
-                tl.is_winning_trade, tl.entry_signal, tl.exit_signal,
-                tl.commission_paid, tl.slippage_cost,
-                tl.equity_at_entry, tl.equity_at_exit
-            FROM trade_log tl
-            JOIN backtest_runs br ON tl.backtest_run_id = br.id
-            WHERE br.run_id = :run_id
-            ORDER BY tl.trade_number
-        """)
-
-        with self.engine.connect() as conn:
-            df = pd.read_sql(query, conn, params={"run_id": run_id})
+        conn = get_connection(self.db_path)
+        try:
+            df = conn.execute("""
+                SELECT
+                    tl.trade_number, tl.entry_time, tl.exit_time,
+                    tl.entry_price, tl.exit_price, tl.position_size,
+                    tl.direction, tl.pnl, tl.pnl_percent,
+                    tl.is_winning_trade, tl.entry_signal, tl.exit_signal,
+                    tl.commission_paid, tl.slippage_cost,
+                    tl.equity_at_entry, tl.equity_at_exit
+                FROM trade_log tl
+                JOIN backtest_runs br ON tl.backtest_run_id = br.id
+                WHERE br.run_id = ?
+                ORDER BY tl.trade_number
+            """, [run_id]).fetchdf()
+        finally:
+            conn.close()
 
         if df.empty:
             logger.warning(f"No trades found for run {run_id}")
@@ -122,7 +124,6 @@ class ReportGenerator:
         if eq_df.empty:
             return pd.DataFrame()
 
-        # Find drawdown periods
         running_max = eq_df["equity"].expanding().max()
         in_drawdown = eq_df["equity"] < running_max
 
@@ -144,7 +145,6 @@ class ReportGenerator:
                 })
                 start = None
 
-        # Handle ongoing drawdown
         if start is not None:
             dd_slice = eq_df.loc[start:]
             max_dd = dd_slice["drawdown_pct"].min()
@@ -155,7 +155,7 @@ class ReportGenerator:
                 "end": end,
                 "duration_days": duration,
                 "max_drawdown_pct": max_dd,
-                "recovery_equity": None,  # still in drawdown
+                "recovery_equity": None,
             })
 
         dd_df = pd.DataFrame(drawdown_periods)
@@ -193,7 +193,7 @@ class ReportGenerator:
             results[f"rolling_{w}d_sharpe"] = (
                 results["pnl_percent"].rolling(f"{w}D").mean()
                 / results["pnl_percent"].rolling(f"{w}D").std()
-                * np.sqrt(252)  # annualize
+                * np.sqrt(252)
             )
             results[f"rolling_{w}d_trades"] = (
                 results["pnl_percent"].rolling(f"{w}D").count()
@@ -212,12 +212,13 @@ class ReportGenerator:
         Generate a human-readable certification report.
         This MUST be reviewed and signed off before live deployment.
         """
-        query = text("""
-            SELECT * FROM backtest_runs WHERE run_id = :run_id
-        """)
-
-        with self.engine.connect() as conn:
-            run = pd.read_sql(query, conn, params={"run_id": run_id})
+        conn = get_connection(self.db_path)
+        try:
+            run = conn.execute(
+                "SELECT * FROM backtest_runs WHERE run_id = ?", [run_id]
+            ).fetchdf()
+        finally:
+            conn.close()
 
         if run.empty:
             return f"ERROR: No backtest run found for {run_id}"
@@ -226,7 +227,6 @@ class ReportGenerator:
         trades = self.export_trade_log(run_id)
         dd_analysis = self.analyze_drawdowns(run_id)
 
-        # Build report
         report = f"""
 {'='*70}
 BACKTEST CERTIFICATION REPORT
@@ -311,10 +311,13 @@ THIS REPORT MUST BE REVIEWED AND SIGNED BEFORE LIVE DEPLOYMENT
     # ------------------------------------------------------------------
     def generate_html_report(self, run_id: str) -> str:
         """Generate a standalone HTML summary with embedded charts."""
-        query = text("SELECT * FROM backtest_runs WHERE run_id = :run_id")
-
-        with self.engine.connect() as conn:
-            run = pd.read_sql(query, conn, params={"run_id": run_id})
+        conn = get_connection(self.db_path)
+        try:
+            run = conn.execute(
+                "SELECT * FROM backtest_runs WHERE run_id = ?", [run_id]
+            ).fetchdf()
+        finally:
+            conn.close()
 
         if run.empty:
             return ""
@@ -323,7 +326,6 @@ THIS REPORT MUST BE REVIEWED AND SIGNED BEFORE LIVE DEPLOYMENT
         trades = self.export_trade_log(run_id)
         eq_df = self.generate_equity_curve(run_id)
 
-        # Prepare chart data
         equity_dates = []
         equity_values = []
         drawdown_values = []
@@ -333,7 +335,6 @@ THIS REPORT MUST BE REVIEWED AND SIGNED BEFORE LIVE DEPLOYMENT
             drawdown_values = eq_df["drawdown_pct"].tolist()
 
         trade_pnls = trades["pnl_percent"].tolist() if not trades.empty else []
-        cumulative_pnls = trades["cumulative_return_pct"].tolist() if not trades.empty else []
 
         html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -433,7 +434,6 @@ THIS REPORT MUST BE REVIEWED AND SIGNED BEFORE LIVE DEPLOYMENT
         const drawdownValues = {json.dumps(drawdown_values)};
         const tradePnls = {json.dumps(trade_pnls)};
 
-        // Equity Chart
         new Chart(document.getElementById('equityChart'), {{
             type: 'line',
             data: {{
@@ -448,7 +448,6 @@ THIS REPORT MUST BE REVIEWED AND SIGNED BEFORE LIVE DEPLOYMENT
             }} }}
         }});
 
-        // Drawdown Chart
         new Chart(document.getElementById('drawdownChart'), {{
             type: 'line',
             data: {{
@@ -463,7 +462,6 @@ THIS REPORT MUST BE REVIEWED AND SIGNED BEFORE LIVE DEPLOYMENT
             }} }}
         }});
 
-        // P&L Distribution
         const bins = Array.from({{length: tradePnls.length}}, (_, i) => i + 1);
         new Chart(document.getElementById('pnlChart'), {{
             type: 'bar',

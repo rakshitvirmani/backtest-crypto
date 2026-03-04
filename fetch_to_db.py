@@ -9,7 +9,7 @@ Fetches OHLCV data from Binance with:
 - Timestamp gap detection
 - Duplicate rejection
 - Price movement sanity checks
-- UPSERT with conflict handling
+- UPSERT with conflict handling (DuckDB)
 - Full audit logging of every fetch operation
 
 NEVER run this without understanding what it does. Real money depends on this data.
@@ -27,15 +27,15 @@ import numpy as np
 import pandas as pd
 from binance.client import Client
 from binance.exceptions import BinanceAPIException, BinanceRequestException
-from sqlalchemy import create_engine, text
-from sqlalchemy.exc import SQLAlchemyError
+
+from db import get_connection, init_schema
 
 # ---------------------------------------------------------------------------
 # Configuration - import from config.py or fall back to env vars
 # ---------------------------------------------------------------------------
 try:
     from config import (
-        DATABASE_URL, BINANCE_API_KEY, BINANCE_API_SECRET,
+        DB_PATH, BINANCE_API_KEY, BINANCE_API_SECRET,
         SYMBOLS, TIMEFRAMES, MAX_RETRIES, RETRY_BASE_DELAY_SEC,
         RETRY_MAX_DELAY_SEC, CIRCUIT_BREAKER_THRESHOLD,
         FETCH_TIMEOUT_ALERT_SEC, RATE_LIMIT_REQUESTS_PER_MIN,
@@ -261,15 +261,19 @@ def compute_checksum(df: pd.DataFrame) -> str:
 class BinanceFetcher:
     """
     Fetches kline data from Binance with retry, circuit breaker, and validation.
+    Uses DuckDB as the storage backend.
     """
 
-    def __init__(self, db_url: str, api_key: str, api_secret: str):
-        self.engine = create_engine(db_url)
-        self.client = Client(api_key, api_secret)
+    def __init__(self, db_path: str = None, api_key: str = None, api_secret: str = None):
+        self.db_path = db_path or DB_PATH
+        self.client = Client(api_key or BINANCE_API_KEY, api_secret or BINANCE_API_SECRET)
         self.rate_limiter = RateLimiter(RATE_LIMIT_REQUESTS_PER_MIN, RATE_LIMIT_SAFETY_MARGIN)
         self.consecutive_failures = 0
         self.validator = FetchDataValidator()
-        logger.info("BinanceFetcher initialized")
+
+        # Ensure schema exists
+        init_schema(self.db_path)
+        logger.info("BinanceFetcher initialized (DuckDB)")
 
     def _fetch_with_retry(
         self, symbol: str, interval: str, start_str: str, end_str: Optional[str] = None
@@ -289,7 +293,8 @@ class BinanceFetcher:
 
                 if elapsed > FETCH_TIMEOUT_ALERT_SEC:
                     logger.warning(
-                        f"Slow fetch: {symbol} {interval} took {elapsed:.1f}s (threshold: {FETCH_TIMEOUT_ALERT_SEC}s)"
+                        f"Slow fetch: {symbol} {interval} took {elapsed:.1f}s "
+                        f"(threshold: {FETCH_TIMEOUT_ALERT_SEC}s)"
                     )
 
                 self.consecutive_failures = 0
@@ -355,59 +360,59 @@ class BinanceFetcher:
         self, df: pd.DataFrame, symbol: str, timeframe: str
     ) -> int:
         """
-        UPSERT klines into PostgreSQL using ON CONFLICT ... DO UPDATE.
+        UPSERT klines into DuckDB using INSERT ... ON CONFLICT ... DO UPDATE.
+        Uses DuckDB's DataFrame integration for efficient bulk inserts.
         Returns count of upserted rows.
         """
         checksum = compute_checksum(df)
-        upsert_sql = text("""
-            INSERT INTO klines (
-                symbol, timeframe, open_time, close_time,
-                open, high, low, close, volume,
-                quote_asset_volume, number_of_trades,
-                taker_buy_base_volume, taker_buy_quote_volume,
-                fetch_timestamp, data_checksum
-            ) VALUES (
-                :symbol, :timeframe, :open_time, :close_time,
-                :open, :high, :low, :close, :volume,
-                :quote_asset_volume, :number_of_trades,
-                :taker_buy_base_volume, :taker_buy_quote_volume,
-                CURRENT_TIMESTAMP, :data_checksum
-            )
-            ON CONFLICT (symbol, timeframe, open_time) DO UPDATE SET
-                close_time = EXCLUDED.close_time,
-                open = EXCLUDED.open,
-                high = EXCLUDED.high,
-                low = EXCLUDED.low,
-                close = EXCLUDED.close,
-                volume = EXCLUDED.volume,
-                quote_asset_volume = EXCLUDED.quote_asset_volume,
-                number_of_trades = EXCLUDED.number_of_trades,
-                taker_buy_base_volume = EXCLUDED.taker_buy_base_volume,
-                taker_buy_quote_volume = EXCLUDED.taker_buy_quote_volume,
-                fetch_timestamp = CURRENT_TIMESTAMP,
-                data_checksum = EXCLUDED.data_checksum
-        """)
+        now = datetime.utcnow()
 
-        upserted = 0
-        with self.engine.begin() as conn:
-            for _, row in df.iterrows():
-                conn.execute(upsert_sql, {
-                    "symbol": symbol,
-                    "timeframe": timeframe,
-                    "open_time": int(row["open_time"]),
-                    "close_time": int(row["close_time"]),
-                    "open": float(row["open"]),
-                    "high": float(row["high"]),
-                    "low": float(row["low"]),
-                    "close": float(row["close"]),
-                    "volume": float(row["volume"]),
-                    "quote_asset_volume": float(row["quote_asset_volume"]) if pd.notna(row["quote_asset_volume"]) else None,
-                    "number_of_trades": int(row["number_of_trades"]) if pd.notna(row["number_of_trades"]) else None,
-                    "taker_buy_base_volume": float(row["taker_buy_base_volume"]) if pd.notna(row["taker_buy_base_volume"]) else None,
-                    "taker_buy_quote_volume": float(row["taker_buy_quote_volume"]) if pd.notna(row["taker_buy_quote_volume"]) else None,
-                    "data_checksum": checksum,
-                })
-                upserted += 1
+        # Prepare DataFrame for insert
+        insert_df = df[["open_time", "close_time", "open", "high", "low", "close",
+                         "volume", "quote_asset_volume", "number_of_trades",
+                         "taker_buy_base_volume", "taker_buy_quote_volume"]].copy()
+        insert_df["symbol"] = symbol
+        insert_df["timeframe"] = timeframe
+        insert_df["fetch_timestamp"] = now
+        insert_df["data_checksum"] = checksum
+
+        conn = get_connection(self.db_path)
+        try:
+            # Register DataFrame and do bulk UPSERT
+            conn.register("_temp_klines", insert_df)
+            conn.execute("""
+                INSERT INTO klines (
+                    symbol, timeframe, open_time, close_time,
+                    open, high, low, close, volume,
+                    quote_asset_volume, number_of_trades,
+                    taker_buy_base_volume, taker_buy_quote_volume,
+                    fetch_timestamp, data_checksum
+                )
+                SELECT
+                    symbol, timeframe, CAST(open_time AS BIGINT), CAST(close_time AS BIGINT),
+                    open, high, low, close, volume,
+                    quote_asset_volume, CAST(number_of_trades AS INT),
+                    taker_buy_base_volume, taker_buy_quote_volume,
+                    fetch_timestamp, data_checksum
+                FROM _temp_klines
+                ON CONFLICT (symbol, timeframe, open_time) DO UPDATE SET
+                    close_time = excluded.close_time,
+                    open = excluded.open,
+                    high = excluded.high,
+                    low = excluded.low,
+                    close = excluded.close,
+                    volume = excluded.volume,
+                    quote_asset_volume = excluded.quote_asset_volume,
+                    number_of_trades = excluded.number_of_trades,
+                    taker_buy_base_volume = excluded.taker_buy_base_volume,
+                    taker_buy_quote_volume = excluded.taker_buy_quote_volume,
+                    fetch_timestamp = excluded.fetch_timestamp,
+                    data_checksum = excluded.data_checksum
+            """)
+            conn.unregister("_temp_klines")
+            upserted = len(insert_df)
+        finally:
+            conn.close()
 
         logger.info(
             f"Upserted {upserted} rows for {symbol} {timeframe}. Checksum: {checksum[:12]}..."
@@ -420,33 +425,24 @@ class BinanceFetcher:
         http_status: int = 200, errors: str = None, checksum: str = None
     ):
         """Write fetch audit record to fetch_log table."""
-        sql = text("""
-            INSERT INTO fetch_log (
-                symbol, timeframe, fetch_start, fetch_end,
-                http_status, response_time_ms,
-                records_fetched, records_upserted, errors, checksum
-            ) VALUES (
-                :symbol, :timeframe, :fetch_start, :fetch_end,
-                :http_status, :response_time_ms,
-                :records_fetched, :records_upserted, :errors, :checksum
-            )
-        """)
         elapsed_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
         try:
-            with self.engine.begin() as conn:
-                conn.execute(sql, {
-                    "symbol": symbol,
-                    "timeframe": timeframe,
-                    "fetch_start": start_time,
-                    "fetch_end": datetime.utcnow(),
-                    "http_status": http_status,
-                    "response_time_ms": elapsed_ms,
-                    "records_fetched": records_fetched,
-                    "records_upserted": records_upserted,
-                    "errors": errors,
-                    "checksum": checksum,
-                })
-        except SQLAlchemyError as e:
+            conn = get_connection(self.db_path)
+            try:
+                conn.execute("""
+                    INSERT INTO fetch_log (
+                        symbol, timeframe, fetch_start, fetch_end,
+                        http_status, response_time_ms,
+                        records_fetched, records_upserted, errors, checksum
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, [
+                    symbol, timeframe, start_time, datetime.utcnow(),
+                    http_status, elapsed_ms,
+                    records_fetched, records_upserted, errors, checksum
+                ])
+            finally:
+                conn.close()
+        except Exception as e:
             logger.error(f"Failed to write fetch log: {e}")
 
     def fetch_symbol_timeframe(
@@ -465,15 +461,18 @@ class BinanceFetcher:
         # Backfill guard
         if not force_backfill:
             cutoff = datetime.utcnow() - timedelta(days=MAX_BACKFILL_DAYS)
-            # Check if we already have recent data
-            with self.engine.connect() as conn:
-                result = conn.execute(text(
+            conn = get_connection(self.db_path)
+            try:
+                result = conn.execute(
                     "SELECT MAX(open_time) FROM klines "
-                    "WHERE symbol = :symbol AND timeframe = :timeframe"
-                ), {"symbol": symbol, "timeframe": timeframe}).scalar()
+                    "WHERE symbol = ? AND timeframe = ?",
+                    [symbol, timeframe]
+                ).fetchone()
+            finally:
+                conn.close()
 
-            if result is not None:
-                last_time = pd.to_datetime(result, unit="ms")
+            if result is not None and result[0] is not None:
+                last_time = pd.to_datetime(result[0], unit="ms")
                 if last_time > cutoff:
                     start_str = last_time.strftime("%d %b, %Y %H:%M:%S")
                     logger.info(f"Incremental fetch from {start_str} (last record in DB)")
@@ -564,7 +563,7 @@ class BinanceFetcher:
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="Fetch Binance klines to PostgreSQL")
+    parser = argparse.ArgumentParser(description="Fetch Binance klines to DuckDB")
     parser.add_argument("--force-backfill", action="store_true",
                         help="Force full historical backfill (ignores MAX_BACKFILL_DAYS)")
     parser.add_argument("--symbol", type=str, help="Override symbol (e.g., BTCUSDT)")
@@ -573,7 +572,7 @@ def main():
                         help="Start date for fetch")
     args = parser.parse_args()
 
-    fetcher = BinanceFetcher(DATABASE_URL, BINANCE_API_KEY, BINANCE_API_SECRET)
+    fetcher = BinanceFetcher()
 
     if args.symbol and args.timeframe:
         fetcher.fetch_symbol_timeframe(

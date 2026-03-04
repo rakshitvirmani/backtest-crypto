@@ -27,7 +27,7 @@ from backtester import (
 )
 
 try:
-    from config import DATABASE_URL, LOG_LEVEL, LOG_FILE
+    from config import DB_PATH, LOG_LEVEL, LOG_FILE
 except ImportError:
     print("ERROR: config.py not found.")
     sys.exit(1)
@@ -73,9 +73,9 @@ class WalkForwardOptimizer:
     Train on 70% of data, validate on 30%.
     """
 
-    def __init__(self, db_url: str = None):
-        self.engine_url = db_url or DATABASE_URL
-        self.backtester = ProductionBacktester(self.engine_url)
+    def __init__(self, db_path: str = None):
+        self.db_path = db_path or DB_PATH
+        self.backtester = ProductionBacktester(self.db_path)
 
     def _split_data(
         self, data: pd.DataFrame, train_pct: float = 0.7
@@ -202,7 +202,7 @@ class WalkForwardOptimizer:
             # Validate EMA crossover constraint: fast < slow
             if config.strategy_name == "ema_crossover":
                 if params.get("ema_fast", 0) >= params.get("ema_slow", 999):
-                    continue  # skip invalid combos
+                    continue
 
             # Validate MACD constraint: fast < slow
             if config.strategy_name == "macd":
@@ -257,8 +257,10 @@ class WalkForwardOptimizer:
             logger.error("No valid results from optimization")
             return {"best_params": None, "results_grid": results_df}
 
-        results_df = results_df.sort_values(f"test_{metric.replace('_ratio', '').replace('total_', '')}",
-                                             ascending=False)
+        results_df = results_df.sort_values(
+            f"test_{metric.replace('_ratio', '').replace('total_', '')}",
+            ascending=False
+        )
 
         # Overfit analysis
         results_df["overfit_ratio"] = np.where(
@@ -306,8 +308,8 @@ class WalkForwardOptimizer:
 class MultiStrategyOptimizer:
     """Run walk-forward optimization across all strategies and rank them."""
 
-    def __init__(self, db_url: str = None):
-        self.optimizer = WalkForwardOptimizer(db_url)
+    def __init__(self, db_path: str = None):
+        self.optimizer = WalkForwardOptimizer(db_path)
 
     def optimize_all(
         self,
