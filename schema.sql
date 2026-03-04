@@ -16,15 +16,9 @@ CREATE SEQUENCE IF NOT EXISTS equity_curve_id_seq START 1;
 
 -- Core klines table: single source of truth for all OHLCV data
 CREATE TABLE IF NOT EXISTS klines (
-<<<<<<< Updated upstream
-    id BIGINT DEFAULT nextval('klines_id_seq') PRIMARY KEY,
-    symbol VARCHAR(10) NOT NULL,
-    timeframe VARCHAR(5) NOT NULL,
-=======
     id INTEGER PRIMARY KEY DEFAULT nextval('klines_id_seq'),
     symbol VARCHAR NOT NULL,
     timeframe VARCHAR NOT NULL,
->>>>>>> Stashed changes
     open_time BIGINT NOT NULL,
     close_time BIGINT NOT NULL,
     open DOUBLE NOT NULL,
@@ -62,43 +56,17 @@ CREATE SEQUENCE IF NOT EXISTS klines_id_seq START 1;
 CREATE SEQUENCE IF NOT EXISTS backtest_runs_id_seq START 1;
 
 CREATE TABLE IF NOT EXISTS backtest_runs (
-<<<<<<< Updated upstream
-    id BIGINT DEFAULT nextval('backtest_runs_id_seq') PRIMARY KEY,
-    run_id VARCHAR(36) UNIQUE NOT NULL,
-    symbol VARCHAR(10) NOT NULL,
-    timeframe VARCHAR(5) NOT NULL,
-    strategy_name VARCHAR(50) NOT NULL,
-    strategy_params JSON NOT NULL,
-=======
     id INTEGER PRIMARY KEY DEFAULT nextval('backtest_runs_id_seq'),
     run_id VARCHAR UNIQUE NOT NULL,
     symbol VARCHAR NOT NULL,
     timeframe VARCHAR NOT NULL,
     strategy_name VARCHAR NOT NULL,
     strategy_params VARCHAR NOT NULL,  -- JSON stored as text
->>>>>>> Stashed changes
     backtest_start TIMESTAMP NOT NULL,
     backtest_end TIMESTAMP NOT NULL,
     created_at TIMESTAMP DEFAULT current_timestamp,
 
     -- Performance metrics
-<<<<<<< Updated upstream
-    total_return DECIMAL(10, 4),
-    annualized_return DECIMAL(10, 4),
-    max_drawdown DECIMAL(10, 4),
-    sharpe_ratio DECIMAL(8, 4),
-    sortino_ratio DECIMAL(8, 4),
-    calmar_ratio DECIMAL(8, 4),
-    win_rate DECIMAL(5, 4),
-    profit_factor DECIMAL(8, 4),
-    num_trades INT,
-    num_winning_trades INT,
-    avg_trade_duration VARCHAR(50),
-    avg_trade_pnl_pct DECIMAL(8, 4),
-    best_trade_pnl_pct DECIMAL(8, 4),
-    worst_trade_pnl_pct DECIMAL(8, 4),
-    max_consecutive_losses INT,
-=======
     total_return DOUBLE,
     annualized_return DOUBLE,
     max_drawdown DOUBLE,
@@ -113,7 +81,6 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     best_trade_pnl_pct DOUBLE,
     worst_trade_pnl_pct DOUBLE,
     max_consecutive_losses INTEGER,
->>>>>>> Stashed changes
 
     -- Configuration snapshot
     initial_capital DOUBLE,
@@ -137,15 +104,9 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
 CREATE SEQUENCE IF NOT EXISTS trade_log_id_seq START 1;
 
 CREATE TABLE IF NOT EXISTS trade_log (
-<<<<<<< Updated upstream
-    id BIGINT DEFAULT nextval('trade_log_id_seq') PRIMARY KEY,
-    backtest_run_id BIGINT REFERENCES backtest_runs(id),
-    trade_number INT NOT NULL,
-=======
     id INTEGER PRIMARY KEY DEFAULT nextval('trade_log_id_seq'),
     backtest_run_id INTEGER,
     trade_number INTEGER NOT NULL,
->>>>>>> Stashed changes
     entry_time TIMESTAMP NOT NULL,
     exit_time TIMESTAMP NOT NULL,
     entry_price DOUBLE NOT NULL,
@@ -177,15 +138,9 @@ CREATE TABLE IF NOT EXISTS trade_log (
 CREATE SEQUENCE IF NOT EXISTS fetch_log_id_seq START 1;
 
 CREATE TABLE IF NOT EXISTS fetch_log (
-<<<<<<< Updated upstream
-    id BIGINT DEFAULT nextval('fetch_log_id_seq') PRIMARY KEY,
-    symbol VARCHAR(10) NOT NULL,
-    timeframe VARCHAR(5) NOT NULL,
-=======
     id INTEGER PRIMARY KEY DEFAULT nextval('fetch_log_id_seq'),
     symbol VARCHAR NOT NULL,
     timeframe VARCHAR NOT NULL,
->>>>>>> Stashed changes
     fetch_start TIMESTAMP NOT NULL,
     fetch_end TIMESTAMP NOT NULL,
     http_status INTEGER,
@@ -204,13 +159,8 @@ CREATE TABLE IF NOT EXISTS fetch_log (
 CREATE SEQUENCE IF NOT EXISTS equity_curve_id_seq START 1;
 
 CREATE TABLE IF NOT EXISTS equity_curve (
-<<<<<<< Updated upstream
-    id BIGINT DEFAULT nextval('equity_curve_id_seq') PRIMARY KEY,
-    backtest_run_id BIGINT REFERENCES backtest_runs(id),
-=======
     id INTEGER PRIMARY KEY DEFAULT nextval('equity_curve_id_seq'),
     backtest_run_id INTEGER,
->>>>>>> Stashed changes
     timestamp TIMESTAMP NOT NULL,
     equity DOUBLE NOT NULL,
     drawdown_pct DOUBLE,

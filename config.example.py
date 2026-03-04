@@ -5,12 +5,8 @@ NEVER commit config.py to version control.
 """
 import os
 
-<<<<<<< Updated upstream
-# Database Configuration (DuckDB - embedded, no server needed)
-=======
 # Database Configuration - DuckDB (embedded, no server needed)
 # Path to the DuckDB database file
->>>>>>> Stashed changes
 DB_PATH = os.getenv("DB_PATH", "data/trading.duckdb")
 
 # Binance API Configuration
