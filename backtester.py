@@ -400,7 +400,7 @@ class ProductionBacktester:
         def safe_float(val, default=np.nan):
             try:
                 v = float(val)
-                return v if not np.isinf(v) else default
+                return v if not (np.isinf(v) or np.isnan(v)) else default
             except (TypeError, ValueError):
                 return default
 
