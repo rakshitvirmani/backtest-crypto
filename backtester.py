@@ -335,6 +335,51 @@ class DMA200Strategy(Strategy):
             self.position.close()
 
 
+class DMA200Trail63Strategy(Strategy):
+    """
+    200-DMA Entry with 63-DMA Trailing Stop
+    - Entry: 2 consecutive closes above the 200-DMA
+    - Exit:  2 consecutive closes below the 63-DMA (trailing SL)
+    Parameters: entry_dma (int), trail_dma (int), consecutive_bars (int)
+    """
+    entry_dma = 200
+    trail_dma = 63
+    consecutive_bars = 2
+
+    def init(self):
+        close = pd.Series(self.data.Close, dtype=float)
+        sma_entry = ta.sma(close, length=self.entry_dma)
+        sma_trail = ta.sma(close, length=self.trail_dma)
+        self.dma_entry = self.I(lambda: sma_entry.values if sma_entry is not None else close.rolling(self.entry_dma).mean().values)
+        self.dma_trail = self.I(lambda: sma_trail.values if sma_trail is not None else close.rolling(self.trail_dma).mean().values)
+
+    def next(self):
+        if len(self.data.Close) < self.consecutive_bars + 1:
+            return
+        if np.isnan(self.dma_entry[-1]) or np.isnan(self.dma_trail[-1]):
+            return
+
+        # Entry: 2 consecutive closes above 200-DMA
+        entry_signal = all(
+            self.data.Close[-1 - i] > self.dma_entry[-1 - i]
+            for i in range(self.consecutive_bars)
+            if not np.isnan(self.dma_entry[-1 - i])
+        )
+
+        # Exit: 2 consecutive closes below 63-DMA
+        exit_signal = all(
+            self.data.Close[-1 - i] < self.dma_trail[-1 - i]
+            for i in range(self.consecutive_bars)
+            if not np.isnan(self.dma_trail[-1 - i])
+        )
+
+        if not self.position:
+            if entry_signal:
+                self.buy()
+        elif exit_signal:
+            self.position.close()
+
+
 # ---------------------------------------------------------------------------
 # Strategy Registry
 # ---------------------------------------------------------------------------
@@ -345,6 +390,7 @@ STRATEGY_REGISTRY: Dict[str, Type[Strategy]] = {
     "rsi_mean_reversion": RSIMeanReversionStrategy,
     "macd": MACDStrategy,
     "dma200": DMA200Strategy,
+    "dma200_trail63": DMA200Trail63Strategy,
 }
 
 
