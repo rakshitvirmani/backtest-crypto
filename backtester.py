@@ -337,14 +337,15 @@ class DMA200Strategy(Strategy):
 
 class DMA200Trail63Strategy(Strategy):
     """
-    200-DMA Entry with 63-DMA Trailing Stop
-    - Entry: 2 consecutive closes above the 200-DMA
+    200-DMA Crossover Entry with 63-DMA Trailing Stop
+    - Entry: Price crosses above 200-DMA (previous close below, current close above)
+             Buy executes on the next bar after the crossover.
     - Exit:  2 consecutive closes below the 63-DMA (trailing SL)
-    Parameters: entry_dma (int), trail_dma (int), consecutive_bars (int)
+    Parameters: entry_dma (int), trail_dma (int), exit_consecutive (int)
     """
     entry_dma = 200
     trail_dma = 63
-    consecutive_bars = 2
+    exit_consecutive = 2
 
     def init(self):
         close = pd.Series(self.data.Close, dtype=float)
@@ -354,27 +355,27 @@ class DMA200Trail63Strategy(Strategy):
         self.dma_trail = self.I(lambda: sma_trail.values if sma_trail is not None else close.rolling(self.trail_dma).mean().values)
 
     def next(self):
-        if len(self.data.Close) < self.consecutive_bars + 1:
+        if len(self.data.Close) < 3:
             return
-        if np.isnan(self.dma_entry[-1]) or np.isnan(self.dma_trail[-1]):
+        if np.isnan(self.dma_entry[-1]) or np.isnan(self.dma_entry[-2]) or np.isnan(self.dma_trail[-1]):
             return
 
-        # Entry: 2 consecutive closes above 200-DMA
-        entry_signal = all(
-            self.data.Close[-1 - i] > self.dma_entry[-1 - i]
-            for i in range(self.consecutive_bars)
-            if not np.isnan(self.dma_entry[-1 - i])
+        # Entry: previous close was below 200-DMA, then closed above 200-DMA
+        # e.g. Jan 1 close < 200DMA, Jan 2 close > 200DMA → buy on Jan 3 (this bar)
+        crossover = (
+            self.data.Close[-2] > self.dma_entry[-2]      # yesterday closed above
+            and self.data.Close[-3] < self.dma_entry[-3]   # day before closed below
         )
 
         # Exit: 2 consecutive closes below 63-DMA
         exit_signal = all(
             self.data.Close[-1 - i] < self.dma_trail[-1 - i]
-            for i in range(self.consecutive_bars)
+            for i in range(self.exit_consecutive)
             if not np.isnan(self.dma_trail[-1 - i])
         )
 
         if not self.position:
-            if entry_signal:
+            if crossover:
                 self.buy()
         elif exit_signal:
             self.position.close()
