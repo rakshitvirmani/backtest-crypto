@@ -381,6 +381,43 @@ class DMA200Trail63Strategy(Strategy):
             self.position.close()
 
 
+class DMA30CrossoverStrategy(Strategy):
+    """
+    30-DMA Crossover Entry & Exit
+    - Entry: Price crosses above 30-DMA from below
+             (previous close below, current close above) → buy next bar
+    - Exit:  Price closes below 30-DMA → sell
+    Parameters: dma_length (int)
+    """
+    dma_length = 30
+
+    def init(self):
+        close = pd.Series(self.data.Close, dtype=float)
+        sma = ta.sma(close, length=self.dma_length)
+        self.dma = self.I(lambda: sma.values if sma is not None else close.rolling(self.dma_length).mean().values)
+
+    def next(self):
+        if len(self.data.Close) < 3:
+            return
+        if np.isnan(self.dma[-1]) or np.isnan(self.dma[-2]) or np.isnan(self.dma[-3]):
+            return
+
+        # Entry: crosses above 30-DMA from below → buy on next bar
+        crossover = (
+            self.data.Close[-2] > self.dma[-2]      # yesterday closed above
+            and self.data.Close[-3] < self.dma[-3]   # day before closed below
+        )
+
+        # Exit: closes below 30-DMA
+        close_below = self.data.Close[-1] < self.dma[-1]
+
+        if not self.position:
+            if crossover:
+                self.buy()
+        elif close_below:
+            self.position.close()
+
+
 # ---------------------------------------------------------------------------
 # Strategy Registry
 # ---------------------------------------------------------------------------
@@ -392,6 +429,7 @@ STRATEGY_REGISTRY: Dict[str, Type[Strategy]] = {
     "macd": MACDStrategy,
     "dma200": DMA200Strategy,
     "dma200_trail63": DMA200Trail63Strategy,
+    "dma30": DMA30CrossoverStrategy,
 }
 
 
