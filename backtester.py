@@ -295,6 +295,46 @@ class MACDStrategy(Strategy):
             self.position.close()
 
 
+class DMA200Strategy(Strategy):
+    """
+    200-DMA Trend Following
+    - Buy when 2 consecutive closes above the 200-period moving average
+    - Sell when 2 consecutive closes below the 200-period moving average
+    Parameters: dma_length (int), consecutive_bars (int)
+    """
+    dma_length = 200
+    consecutive_bars = 2
+
+    def init(self):
+        close = pd.Series(self.data.Close, dtype=float)
+        sma = ta.sma(close, length=self.dma_length)
+        self.dma = self.I(lambda: sma.values if sma is not None else close.rolling(self.dma_length).mean().values)
+
+    def next(self):
+        if len(self.data.Close) < self.consecutive_bars + 1:
+            return
+        if np.isnan(self.dma[-1]):
+            return
+
+        # Check if last N consecutive closes are above/below DMA
+        all_above = all(
+            self.data.Close[-1 - i] > self.dma[-1 - i]
+            for i in range(self.consecutive_bars)
+            if not np.isnan(self.dma[-1 - i])
+        )
+        all_below = all(
+            self.data.Close[-1 - i] < self.dma[-1 - i]
+            for i in range(self.consecutive_bars)
+            if not np.isnan(self.dma[-1 - i])
+        )
+
+        if not self.position:
+            if all_above:
+                self.buy()
+        elif all_below:
+            self.position.close()
+
+
 # ---------------------------------------------------------------------------
 # Strategy Registry
 # ---------------------------------------------------------------------------
@@ -304,6 +344,7 @@ STRATEGY_REGISTRY: Dict[str, Type[Strategy]] = {
     "supertrend": SuperTrendStrategy,
     "rsi_mean_reversion": RSIMeanReversionStrategy,
     "macd": MACDStrategy,
+    "dma200": DMA200Strategy,
 }
 
 
