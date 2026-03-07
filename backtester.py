@@ -418,6 +418,54 @@ class DMA30CrossoverStrategy(Strategy):
             self.position.close()
 
 
+class GoldenCrossDrawdownStrategy(Strategy):
+    """
+    21/200-DMA Golden Cross with Drawdown Exit
+    - Entry: 21-DMA crosses above 200-DMA from below AND price close > 200-DMA
+    - Exit:  Price drops 20% from the highest close since entry
+    Parameters: fast_dma (int), slow_dma (int), drawdown_pct (float)
+    """
+    fast_dma = 21
+    slow_dma = 200
+    drawdown_pct = 20.0
+
+    def init(self):
+        close = pd.Series(self.data.Close, dtype=float)
+        sma_fast = ta.sma(close, length=self.fast_dma)
+        sma_slow = ta.sma(close, length=self.slow_dma)
+        self.dma_fast = self.I(lambda: sma_fast.values if sma_fast is not None else close.rolling(self.fast_dma).mean().values)
+        self.dma_slow = self.I(lambda: sma_slow.values if sma_slow is not None else close.rolling(self.slow_dma).mean().values)
+        self._peak_price = 0.0
+
+    def next(self):
+        if len(self.data.Close) < 3:
+            return
+        if np.isnan(self.dma_fast[-1]) or np.isnan(self.dma_fast[-2]) or np.isnan(self.dma_slow[-1]):
+            return
+
+        # Entry: 21-DMA crosses above 200-DMA from below AND close > 200-DMA
+        golden_cross = (
+            self.dma_fast[-2] > self.dma_slow[-2]      # yesterday 21DMA above 200DMA
+            and self.dma_fast[-3] < self.dma_slow[-3]   # day before 21DMA below 200DMA
+        )
+        price_above_slow = self.data.Close[-1] > self.dma_slow[-1]
+
+        if not self.position:
+            if golden_cross and price_above_slow:
+                self._peak_price = self.data.Close[-1]
+                self.buy()
+        else:
+            # Track the highest close since entry
+            if self.data.Close[-1] > self._peak_price:
+                self._peak_price = self.data.Close[-1]
+
+            # Exit: price has fallen drawdown_pct% from peak on closing basis
+            drop_from_peak = (self._peak_price - self.data.Close[-1]) / self._peak_price * 100
+            if drop_from_peak >= self.drawdown_pct:
+                self.position.close()
+                self._peak_price = 0.0
+
+
 # ---------------------------------------------------------------------------
 # Strategy Registry
 # ---------------------------------------------------------------------------
@@ -430,6 +478,7 @@ STRATEGY_REGISTRY: Dict[str, Type[Strategy]] = {
     "dma200": DMA200Strategy,
     "dma200_trail63": DMA200Trail63Strategy,
     "dma30": DMA30CrossoverStrategy,
+    "golden_cross_dd": GoldenCrossDrawdownStrategy,
 }
 
 
