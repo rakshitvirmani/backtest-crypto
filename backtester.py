@@ -475,9 +475,10 @@ class TripleDMAStrategy(Strategy):
       1. Price crosses above 200-DMA from below → enter, trail with 63-DMA
       2. Price crosses above 63-DMA from below  → enter, trail with 21-DMA
 
-    While in position, if price also crosses above the next tier:
-      - Entered on 200-DMA crossover, trailing 63-DMA →
-        once price crosses above 63-DMA, tighten trail to 21-DMA
+    Trailing stop adapts while in position:
+      - Entered on 200-DMA crossover → trailing 63-DMA
+      - Entered on 63-DMA crossover  → trailing 21-DMA
+        → if price then closes above 200-DMA, widen trail to 63-DMA
 
     Exit: close below the active trailing DMA
 
@@ -497,6 +498,8 @@ class TripleDMAStrategy(Strategy):
         self.dma_fast = self.I(lambda: sma_fast.values if sma_fast is not None else close.rolling(self.fast_dma).mean().values)
         # Track which trailing DMA is active: 'mid' (63) or 'fast' (21)
         self._active_trail = None
+        # Track how entry was taken: 'slow' (200-DMA) or 'mid' (63-DMA)
+        self._entry_type = None
 
     def _crossed_above(self, dma):
         """Check if price crossed above a DMA from below (yesterday above, day before below)."""
@@ -515,26 +518,32 @@ class TripleDMAStrategy(Strategy):
             # Entry 1: price crosses above 200-DMA → trail with 63-DMA
             if self._crossed_above(self.dma_slow):
                 self._active_trail = 'mid'
+                self._entry_type = 'slow'
                 self.buy()
             # Entry 2: price crosses above 63-DMA → trail with 21-DMA
             elif self._crossed_above(self.dma_mid):
                 self._active_trail = 'fast'
+                self._entry_type = 'mid'
                 self.buy()
         else:
-            # Upgrade trailing: if entered on 200-DMA (trailing 63), and price
-            # now crosses above 63-DMA, tighten trail to 21-DMA
-            if self._active_trail == 'mid' and self._crossed_above(self.dma_mid):
-                self._active_trail = 'fast'
+            # Adapt trailing stop based on price action:
+            if self._entry_type == 'mid' and self._active_trail == 'fast':
+                # Entered on 63-DMA, trailing 21-DMA →
+                # if price closes above 200-DMA, widen trail to 63-DMA
+                if self.data.Close[-1] > self.dma_slow[-1]:
+                    self._active_trail = 'mid'
 
             # Exit: close below the active trailing DMA
             if self._active_trail == 'mid':
                 if self.data.Close[-1] < self.dma_mid[-1]:
                     self.position.close()
                     self._active_trail = None
+                    self._entry_type = None
             elif self._active_trail == 'fast':
                 if self.data.Close[-1] < self.dma_fast[-1]:
                     self.position.close()
                     self._active_trail = None
+                    self._entry_type = None
 
 
 # ---------------------------------------------------------------------------
