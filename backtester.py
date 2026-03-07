@@ -466,6 +466,77 @@ class GoldenCrossDrawdownStrategy(Strategy):
                 self._peak_price = 0.0
 
 
+class TripleDMAStrategy(Strategy):
+    """
+    Triple DMA Tiered Entry with Adaptive Trailing Stop
+    Uses 3 moving averages: 200, 63, 21
+
+    Entry signals (whichever fires first while flat):
+      1. Price crosses above 200-DMA from below → enter, trail with 63-DMA
+      2. Price crosses above 63-DMA from below  → enter, trail with 21-DMA
+
+    While in position, if price also crosses above the next tier:
+      - Entered on 200-DMA crossover, trailing 63-DMA →
+        once price crosses above 63-DMA, tighten trail to 21-DMA
+
+    Exit: close below the active trailing DMA
+
+    Parameters: slow_dma (int), mid_dma (int), fast_dma (int)
+    """
+    slow_dma = 200
+    mid_dma = 63
+    fast_dma = 21
+
+    def init(self):
+        close = pd.Series(self.data.Close, dtype=float)
+        sma_slow = ta.sma(close, length=self.slow_dma)
+        sma_mid = ta.sma(close, length=self.mid_dma)
+        sma_fast = ta.sma(close, length=self.fast_dma)
+        self.dma_slow = self.I(lambda: sma_slow.values if sma_slow is not None else close.rolling(self.slow_dma).mean().values)
+        self.dma_mid = self.I(lambda: sma_mid.values if sma_mid is not None else close.rolling(self.mid_dma).mean().values)
+        self.dma_fast = self.I(lambda: sma_fast.values if sma_fast is not None else close.rolling(self.fast_dma).mean().values)
+        # Track which trailing DMA is active: 'mid' (63) or 'fast' (21)
+        self._active_trail = None
+
+    def _crossed_above(self, dma):
+        """Check if price crossed above a DMA from below (yesterday above, day before below)."""
+        return (
+            self.data.Close[-2] > dma[-2]
+            and self.data.Close[-3] < dma[-3]
+        )
+
+    def next(self):
+        if len(self.data.Close) < 4:
+            return
+        if np.isnan(self.dma_slow[-1]) or np.isnan(self.dma_mid[-1]) or np.isnan(self.dma_fast[-1]):
+            return
+
+        if not self.position:
+            # Entry 1: price crosses above 200-DMA → trail with 63-DMA
+            if self._crossed_above(self.dma_slow):
+                self._active_trail = 'mid'
+                self.buy()
+            # Entry 2: price crosses above 63-DMA → trail with 21-DMA
+            elif self._crossed_above(self.dma_mid):
+                self._active_trail = 'fast'
+                self.buy()
+        else:
+            # Upgrade trailing: if entered on 200-DMA (trailing 63), and price
+            # now crosses above 63-DMA, tighten trail to 21-DMA
+            if self._active_trail == 'mid' and self._crossed_above(self.dma_mid):
+                self._active_trail = 'fast'
+
+            # Exit: close below the active trailing DMA
+            if self._active_trail == 'mid':
+                if self.data.Close[-1] < self.dma_mid[-1]:
+                    self.position.close()
+                    self._active_trail = None
+            elif self._active_trail == 'fast':
+                if self.data.Close[-1] < self.dma_fast[-1]:
+                    self.position.close()
+                    self._active_trail = None
+
+
 # ---------------------------------------------------------------------------
 # Strategy Registry
 # ---------------------------------------------------------------------------
@@ -479,6 +550,7 @@ STRATEGY_REGISTRY: Dict[str, Type[Strategy]] = {
     "dma200_trail63": DMA200Trail63Strategy,
     "dma30": DMA30CrossoverStrategy,
     "golden_cross_dd": GoldenCrossDrawdownStrategy,
+    "triple_dma": TripleDMAStrategy,
 }
 
 
