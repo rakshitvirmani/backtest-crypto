@@ -475,10 +475,9 @@ class TripleDMAStrategy(Strategy):
       1. Price crosses above 200-DMA from below → enter, trail with 63-DMA
       2. Price crosses above 63-DMA from below  → enter, trail with 21-DMA
 
-    Trailing stop adapts while in position:
-      - Entered on 200-DMA crossover → trailing 63-DMA
-      - Entered on 63-DMA crossover  → trailing 21-DMA
-        → if price then closes above 200-DMA, widen trail to 63-DMA
+    While in position, if price also crosses above the next tier:
+      - Entered on 200-DMA crossover, trailing 63-DMA →
+        once price crosses above 63-DMA, tighten trail to 21-DMA
 
     Exit: close below the active trailing DMA
 
@@ -498,8 +497,6 @@ class TripleDMAStrategy(Strategy):
         self.dma_fast = self.I(lambda: sma_fast.values if sma_fast is not None else close.rolling(self.fast_dma).mean().values)
         # Track which trailing DMA is active: 'mid' (63) or 'fast' (21)
         self._active_trail = None
-        # Track how entry was taken: 'slow' (200-DMA) or 'mid' (63-DMA)
-        self._entry_type = None
 
     def _crossed_above(self, dma):
         """Check if price crossed above a DMA from below (yesterday above, day before below)."""
@@ -518,32 +515,77 @@ class TripleDMAStrategy(Strategy):
             # Entry 1: price crosses above 200-DMA → trail with 63-DMA
             if self._crossed_above(self.dma_slow):
                 self._active_trail = 'mid'
-                self._entry_type = 'slow'
                 self.buy()
             # Entry 2: price crosses above 63-DMA → trail with 21-DMA
             elif self._crossed_above(self.dma_mid):
                 self._active_trail = 'fast'
-                self._entry_type = 'mid'
                 self.buy()
         else:
-            # Adapt trailing stop based on price action:
-            if self._entry_type == 'mid' and self._active_trail == 'fast':
-                # Entered on 63-DMA, trailing 21-DMA →
-                # if price closes above 200-DMA, widen trail to 63-DMA
-                if self.data.Close[-1] > self.dma_slow[-1]:
-                    self._active_trail = 'mid'
+            # Upgrade trailing: if entered on 200-DMA (trailing 63), and price
+            # now crosses above 63-DMA, tighten trail to 21-DMA
+            if self._active_trail == 'mid' and self._crossed_above(self.dma_mid):
+                self._active_trail = 'fast'
 
             # Exit: close below the active trailing DMA
             if self._active_trail == 'mid':
                 if self.data.Close[-1] < self.dma_mid[-1]:
                     self.position.close()
                     self._active_trail = None
-                    self._entry_type = None
             elif self._active_trail == 'fast':
                 if self.data.Close[-1] < self.dma_fast[-1]:
                     self.position.close()
                     self._active_trail = None
-                    self._entry_type = None
+
+
+class BBRSIStrategy(Strategy):
+    """
+    Bollinger Bands + RSI Confluence Strategy
+    - Buy:  Price closes below lower BB AND RSI < oversold threshold
+    - Sell: Price closes above upper BB AND RSI > overbought threshold
+    Both conditions must be true simultaneously for higher conviction entries/exits.
+    Parameters: bb_length (int), bb_std (float), rsi_length (int),
+                rsi_oversold (float), rsi_overbought (float)
+    """
+    bb_length = 20
+    bb_std = 2.0
+    rsi_length = 14
+    rsi_oversold = 30.0
+    rsi_overbought = 70.0
+
+    def init(self):
+        close = pd.Series(self.data.Close, dtype=float)
+
+        # Bollinger Bands
+        bb = ta.bbands(close, length=self.bb_length, std=self.bb_std)
+        if bb is not None and len(bb.columns) >= 3:
+            self.bb_lower = self.I(lambda: bb.iloc[:, 0].values)
+            self.bb_middle = self.I(lambda: bb.iloc[:, 1].values)
+            self.bb_upper = self.I(lambda: bb.iloc[:, 2].values)
+        else:
+            sma = close.rolling(self.bb_length).mean()
+            std = close.rolling(self.bb_length).std()
+            self.bb_lower = self.I(lambda: (sma - self.bb_std * std).values)
+            self.bb_middle = self.I(lambda: sma.values)
+            self.bb_upper = self.I(lambda: (sma + self.bb_std * std).values)
+
+        # RSI
+        rsi = ta.rsi(close, length=self.rsi_length)
+        self.rsi = self.I(lambda: rsi.values if rsi is not None else np.full(len(close), 50.0))
+
+    def next(self):
+        if np.isnan(self.bb_lower[-1]) or np.isnan(self.bb_upper[-1]) or np.isnan(self.rsi[-1]):
+            return
+
+        price = self.data.Close[-1]
+
+        if not self.position:
+            # Buy: price at/below lower BB AND RSI oversold
+            if price <= self.bb_lower[-1] and self.rsi[-1] < self.rsi_oversold:
+                self.buy()
+        else:
+            # Sell: price at/above upper BB AND RSI overbought
+            if price >= self.bb_upper[-1] and self.rsi[-1] > self.rsi_overbought:
+                self.position.close()
 
 
 # ---------------------------------------------------------------------------
@@ -560,6 +602,7 @@ STRATEGY_REGISTRY: Dict[str, Type[Strategy]] = {
     "dma30": DMA30CrossoverStrategy,
     "golden_cross_dd": GoldenCrossDrawdownStrategy,
     "triple_dma": TripleDMAStrategy,
+    "bb_rsi": BBRSIStrategy,
 }
 
 
