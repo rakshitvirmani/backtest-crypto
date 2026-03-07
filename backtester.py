@@ -537,6 +537,57 @@ class TripleDMAStrategy(Strategy):
                     self._active_trail = None
 
 
+class BBRSIStrategy(Strategy):
+    """
+    Bollinger Bands + RSI Confluence Strategy
+    - Buy:  Price closes below lower BB AND RSI < oversold threshold
+    - Sell: Price closes above upper BB AND RSI > overbought threshold
+    Both conditions must be true simultaneously for higher conviction entries/exits.
+    Parameters: bb_length (int), bb_std (float), rsi_length (int),
+                rsi_oversold (float), rsi_overbought (float)
+    """
+    bb_length = 20
+    bb_std = 2.0
+    rsi_length = 14
+    rsi_oversold = 30.0
+    rsi_overbought = 70.0
+
+    def init(self):
+        close = pd.Series(self.data.Close, dtype=float)
+
+        # Bollinger Bands
+        bb = ta.bbands(close, length=self.bb_length, std=self.bb_std)
+        if bb is not None and len(bb.columns) >= 3:
+            self.bb_lower = self.I(lambda: bb.iloc[:, 0].values)
+            self.bb_middle = self.I(lambda: bb.iloc[:, 1].values)
+            self.bb_upper = self.I(lambda: bb.iloc[:, 2].values)
+        else:
+            sma = close.rolling(self.bb_length).mean()
+            std = close.rolling(self.bb_length).std()
+            self.bb_lower = self.I(lambda: (sma - self.bb_std * std).values)
+            self.bb_middle = self.I(lambda: sma.values)
+            self.bb_upper = self.I(lambda: (sma + self.bb_std * std).values)
+
+        # RSI
+        rsi = ta.rsi(close, length=self.rsi_length)
+        self.rsi = self.I(lambda: rsi.values if rsi is not None else np.full(len(close), 50.0))
+
+    def next(self):
+        if np.isnan(self.bb_lower[-1]) or np.isnan(self.bb_upper[-1]) or np.isnan(self.rsi[-1]):
+            return
+
+        price = self.data.Close[-1]
+
+        if not self.position:
+            # Buy: price at/below lower BB AND RSI oversold
+            if price <= self.bb_lower[-1] and self.rsi[-1] < self.rsi_oversold:
+                self.buy()
+        else:
+            # Sell: price at/above upper BB AND RSI overbought
+            if price >= self.bb_upper[-1] and self.rsi[-1] > self.rsi_overbought:
+                self.position.close()
+
+
 # ---------------------------------------------------------------------------
 # Strategy Registry
 # ---------------------------------------------------------------------------
@@ -551,6 +602,7 @@ STRATEGY_REGISTRY: Dict[str, Type[Strategy]] = {
     "dma30": DMA30CrossoverStrategy,
     "golden_cross_dd": GoldenCrossDrawdownStrategy,
     "triple_dma": TripleDMAStrategy,
+    "bb_rsi": BBRSIStrategy,
 }
 
 
