@@ -645,6 +645,183 @@ class LongShortDMA200Strategy(Strategy):
                 self.position.close()
 
 
+class AdaptiveDMAStrategy(Strategy):
+    """
+    Adaptive DMA Strategy with Context-Dependent Entry & Trailing SL
+
+    Three entry scenarios based on DMA alignment:
+
+    Scenario 1: Price crosses above 200-DMA, 63-DMA already > 200-DMA
+      → Enter immediately, trail with 200-DMA
+      → Upgrade: price crosses above 63-DMA from below + 2 closes above it
+        → trail becomes 63-DMA
+
+    Scenario 2: Price crosses above 200-DMA, 63-DMA < 200-DMA
+      → Wait for 2 green days (close > open) above 200-DMA, then enter
+      → Trail with 200-DMA
+      → Upgrade: if 63-DMA crosses above 200-DMA → trail becomes 63-DMA
+
+    Scenario 3: Price crosses above 63-DMA, 21-DMA < 63-DMA
+      → Wait for 2 green days (close > open) above 63-DMA, then enter
+      → Trail with 63-DMA
+      → Upgrade: if 21-DMA crosses above 63-DMA → trail becomes 21-DMA
+
+    Exit: close below the active trailing DMA
+
+    Parameters: slow_dma (int), mid_dma (int), fast_dma (int), confirm_days (int)
+    """
+    slow_dma = 200
+    mid_dma = 63
+    fast_dma = 21
+    confirm_days = 2
+
+    def init(self):
+        close = pd.Series(self.data.Close, dtype=float)
+        sma_slow = ta.sma(close, length=self.slow_dma)
+        sma_mid = ta.sma(close, length=self.mid_dma)
+        sma_fast = ta.sma(close, length=self.fast_dma)
+        self.dma_slow = self.I(lambda: sma_slow.values if sma_slow is not None else close.rolling(self.slow_dma).mean().values)
+        self.dma_mid = self.I(lambda: sma_mid.values if sma_mid is not None else close.rolling(self.mid_dma).mean().values)
+        self.dma_fast = self.I(lambda: sma_fast.values if sma_fast is not None else close.rolling(self.fast_dma).mean().values)
+
+        # State tracking
+        self._state = 'flat'       # flat | waiting_200 | waiting_63 | in_trade
+        self._trail = None         # 'slow' (200) | 'mid' (63) | 'fast' (21)
+        self._scenario = None      # 1 | 2 | 3
+        self._green_count = 0      # consecutive green days for entry confirmation
+        self._crossed_mid = False   # scenario 1: did price cross above 63-DMA from below?
+        self._upgrade_count = 0     # scenario 1: consecutive closes above 63-DMA after cross
+
+    def _price_crossed_above(self, dma):
+        """Price crossed above a DMA from below (day before below, yesterday above)."""
+        return (
+            self.data.Close[-2] > dma[-2]
+            and self.data.Close[-3] < dma[-3]
+        )
+
+    def _dma_crossed_above(self, fast_dma, slow_dma):
+        """Fast DMA crossed above slow DMA."""
+        return (fast_dma[-1] > slow_dma[-1] and fast_dma[-2] <= slow_dma[-2])
+
+    def _reset(self):
+        """Reset all state to flat."""
+        self._state = 'flat'
+        self._trail = None
+        self._scenario = None
+        self._green_count = 0
+        self._crossed_mid = False
+        self._upgrade_count = 0
+
+    def next(self):
+        if len(self.data.Close) < 4:
+            return
+        if np.isnan(self.dma_slow[-1]) or np.isnan(self.dma_mid[-1]) or np.isnan(self.dma_fast[-1]):
+            return
+
+        price = self.data.Close[-1]
+        is_green = self.data.Close[-1] > self.data.Open[-1]
+
+        price_crossed_200 = self._price_crossed_above(self.dma_slow)
+        price_crossed_63 = self._price_crossed_above(self.dma_mid)
+        dma63_crossed_200 = self._dma_crossed_above(self.dma_mid, self.dma_slow)
+        dma21_crossed_63 = self._dma_crossed_above(self.dma_fast, self.dma_mid)
+
+        # ── FLAT: look for entry signals ──────────────────────────
+        if self._state == 'flat':
+            # Scenario 1: price crosses 200-DMA, 63-DMA already above 200-DMA
+            #   → enter immediately, trail with 200-DMA
+            if price_crossed_200 and self.dma_mid[-1] > self.dma_slow[-1]:
+                self._trail = 'slow'
+                self._scenario = 1
+                self._state = 'in_trade'
+                self._crossed_mid = False
+                self._upgrade_count = 0
+                self.buy()
+
+            # Scenario 2: price crosses 200-DMA, 63-DMA below 200-DMA
+            #   → wait for 2 green days
+            elif price_crossed_200 and self.dma_mid[-1] < self.dma_slow[-1]:
+                self._state = 'waiting_200'
+                self._scenario = 2
+                self._green_count = 0
+
+            # Scenario 3: price crosses 63-DMA, 21-DMA below 63-DMA
+            #   → wait for 2 green days
+            elif price_crossed_63 and self.dma_fast[-1] < self.dma_mid[-1]:
+                self._state = 'waiting_63'
+                self._scenario = 3
+                self._green_count = 0
+
+        # ── WAITING: confirm with green days before entry ─────────
+        elif self._state == 'waiting_200':
+            if price > self.dma_slow[-1] and is_green:
+                self._green_count += 1
+                if self._green_count >= self.confirm_days:
+                    self._trail = 'slow'
+                    self._state = 'in_trade'
+                    self.buy()
+            else:
+                self._green_count = 0
+                # Cancel if price falls back below 200-DMA
+                if price < self.dma_slow[-1]:
+                    self._reset()
+
+        elif self._state == 'waiting_63':
+            if price > self.dma_mid[-1] and is_green:
+                self._green_count += 1
+                if self._green_count >= self.confirm_days:
+                    self._trail = 'mid'
+                    self._state = 'in_trade'
+                    self.buy()
+            else:
+                self._green_count = 0
+                # Cancel if price falls back below 63-DMA
+                if price < self.dma_mid[-1]:
+                    self._reset()
+
+        # ── IN TRADE: manage trailing SL upgrades & exit ──────────
+        elif self._state == 'in_trade':
+
+            # Scenario 1 upgrade: trailing 200 → 63
+            # Price must cross above 63-DMA from below, then 2 consecutive
+            # closes above 63-DMA → upgrade trail to 63-DMA
+            if self._scenario == 1 and self._trail == 'slow':
+                if self._price_crossed_above(self.dma_mid):
+                    self._crossed_mid = True
+                    self._upgrade_count = 0
+                if self._crossed_mid:
+                    if price > self.dma_mid[-1]:
+                        self._upgrade_count += 1
+                        if self._upgrade_count >= self.confirm_days:
+                            self._trail = 'mid'
+                    else:
+                        self._upgrade_count = 0
+                        self._crossed_mid = False
+
+            # Scenario 2 upgrade: trailing 200 → 63
+            # If 63-DMA crosses above 200-DMA → upgrade trail to 63-DMA
+            if self._scenario == 2 and self._trail == 'slow':
+                if dma63_crossed_200:
+                    self._trail = 'mid'
+
+            # Scenario 3 upgrade: trailing 63 → 21
+            # If 21-DMA crosses above 63-DMA → upgrade trail to 21-DMA
+            if self._scenario == 3 and self._trail == 'mid':
+                if dma21_crossed_63:
+                    self._trail = 'fast'
+
+            # Exit: close below active trailing DMA
+            if self._trail == 'slow' and price < self.dma_slow[-1]:
+                self.position.close()
+                self._reset()
+            elif self._trail == 'mid' and price < self.dma_mid[-1]:
+                self.position.close()
+                self._reset()
+            elif self._trail == 'fast' and price < self.dma_fast[-1]:
+                self.position.close()
+                self._reset()
+
+
 # ---------------------------------------------------------------------------
 # Strategy Registry
 # ---------------------------------------------------------------------------
@@ -661,6 +838,7 @@ STRATEGY_REGISTRY: Dict[str, Type[Strategy]] = {
     "triple_dma": TripleDMAStrategy,
     "bb_rsi": BBRSIStrategy,
     "long_short_dma": LongShortDMA200Strategy,
+    "adaptive_dma": AdaptiveDMAStrategy,
 }
 
 
