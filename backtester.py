@@ -588,6 +588,63 @@ class BBRSIStrategy(Strategy):
                 self.position.close()
 
 
+class LongShortDMA200Strategy(Strategy):
+    """
+    Long/Short 200-DMA Regime Strategy with 63-DMA Trailing
+    - Price crosses above 200-DMA from below → go LONG, trail with 63-DMA
+    - Price crosses below 200-DMA from above → go SHORT, trail with 63-DMA
+    - Long exit:  close below 63-DMA
+    - Short exit: close above 63-DMA
+    Parameters: regime_dma (int), trail_dma (int)
+    """
+    regime_dma = 200
+    trail_dma = 63
+
+    def init(self):
+        close = pd.Series(self.data.Close, dtype=float)
+        sma_regime = ta.sma(close, length=self.regime_dma)
+        sma_trail = ta.sma(close, length=self.trail_dma)
+        self.dma_regime = self.I(lambda: sma_regime.values if sma_regime is not None else close.rolling(self.regime_dma).mean().values)
+        self.dma_trail = self.I(lambda: sma_trail.values if sma_trail is not None else close.rolling(self.trail_dma).mean().values)
+
+    def next(self):
+        if len(self.data.Close) < 4:
+            return
+        if np.isnan(self.dma_regime[-1]) or np.isnan(self.dma_regime[-3]) or np.isnan(self.dma_trail[-1]):
+            return
+
+        # Crossover: price crosses above 200-DMA from below
+        crossed_above = (
+            self.data.Close[-2] > self.dma_regime[-2]
+            and self.data.Close[-3] < self.dma_regime[-3]
+        )
+        # Crossunder: price crosses below 200-DMA from above
+        crossed_below = (
+            self.data.Close[-2] < self.dma_regime[-2]
+            and self.data.Close[-3] > self.dma_regime[-3]
+        )
+
+        if not self.position:
+            if crossed_above:
+                self.buy()
+            elif crossed_below:
+                self.sell()
+        elif self.position.is_long:
+            # Exit long if close below 63-DMA, or flip to short on cross below 200-DMA
+            if crossed_below:
+                self.position.close()
+                self.sell()
+            elif self.data.Close[-1] < self.dma_trail[-1]:
+                self.position.close()
+        elif self.position.is_short:
+            # Exit short if close above 63-DMA, or flip to long on cross above 200-DMA
+            if crossed_above:
+                self.position.close()
+                self.buy()
+            elif self.data.Close[-1] > self.dma_trail[-1]:
+                self.position.close()
+
+
 # ---------------------------------------------------------------------------
 # Strategy Registry
 # ---------------------------------------------------------------------------
@@ -603,6 +660,7 @@ STRATEGY_REGISTRY: Dict[str, Type[Strategy]] = {
     "golden_cross_dd": GoldenCrossDrawdownStrategy,
     "triple_dma": TripleDMAStrategy,
     "bb_rsi": BBRSIStrategy,
+    "long_short_dma": LongShortDMA200Strategy,
 }
 
 
